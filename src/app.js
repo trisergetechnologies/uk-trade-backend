@@ -7,11 +7,11 @@ const routes = require('./routes');
 const { logger } = require('./utils/logger');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
 const { sanitizeApiResponses } = require('./middlewares/response-sanitize.middleware');
-const { createCorsMiddleware } = require('./middlewares/cors.middleware');
 
 const app = express();
 
-app.use(createCorsMiddleware());
+// Intentionally no browser CORS: clients use the API gateway only. Gateway → backend is server-to-server.
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
