@@ -53,12 +53,25 @@ async function adminListWithdrawals(req, res, next) {
     if (WITHDRAWAL_STATUSES.has(status)) {
       filter.status = status;
     }
+    const q = String(req.query.q || '').trim();
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000Z`);
+      if (to) filter.createdAt.$lte = new Date(`${to}T23:59:59.999Z`);
+    }
+    if (q) {
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      filter.$or = [{ reviewReason: rx }, { publicId: rx }];
+    }
     const [list, total] = await Promise.all([
       WithdrawalRequest.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate('userId', 'name email'),
+        .populate('userId', 'name email userCode'),
       WithdrawalRequest.countDocuments(filter),
     ]);
     res.json({ success: true, data: list, meta: metaFor(page, limit, total) });

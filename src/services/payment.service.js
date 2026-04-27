@@ -6,7 +6,8 @@ async function createPaymentRequest(userId, payload) {
   return PaymentRequest.create({
     userId,
     requestedAmount: payload.amount,
-    screenshotUrl: payload.screenshotUrl,
+    screenshotAsset: payload.screenshotAsset,
+    screenshotUrl: payload.screenshotUrl || '',
     notes: payload.notes || '',
   });
 }

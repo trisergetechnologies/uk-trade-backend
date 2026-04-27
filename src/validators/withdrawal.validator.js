@@ -8,7 +8,7 @@ const withdrawalRequestSchema = z.object({
 
 const adminReviewWithdrawalSchema = z.object({
   params: z.object({ id: z.string().min(1) }),
-  body: z.object({ status: z.enum(['approved', 'rejected']), reason: z.string().optional() }),
+  body: z.object({ status: z.enum(['approved', 'rejected']), reason: z.string().trim().min(2).max(2000) }),
   query: z.object({}).optional(),
 });
 

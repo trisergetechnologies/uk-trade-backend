@@ -1,50 +1,50 @@
 {
-    "name":  "uk-trade-backend",
-    "version":  "1.0.0",
-    "description":  "",
-    "main":  "src/server.js",
-    "scripts":  {
-                    "test":  "jest --runInBand -c jest.config.cjs",
-                    "test:api":  "jest --runInBand -c jest.integration.config.cjs",
-                    "dev":  "nodemon src/server.js",
-                    "start":  "node src/server.js",
-                    "seed":  "node scripts/seed.js",
-                    "seed:packages":  "node scripts/seed-packages-and-plans.js",
-                    "seed:holidays":  "node scripts/seed-holidays.js",
-                    "seed:network":  "node scripts/seed-large-network.js",
-                    "lint":  "eslint ."
-                },
-    "repository":  {
-                       "type":  "git",
-                       "url":  "git+https://github.com/trisergetechnologies/uk-trade-backend.git"
-                   },
-    "keywords":  [
-
-                 ],
-    "author":  "",
-    "license":  "ISC",
-    "type":  "commonjs",
-    "bugs":  {
-                 "url":  "https://github.com/trisergetechnologies/uk-trade-backend/issues"
-             },
-    "homepage":  "https://github.com/trisergetechnologies/uk-trade-backend#readme",
-    "dependencies":  {
-                         "bcryptjs":  "^3.0.3",
-                         "cors":  "^2.8.6",
-                         "dotenv":  "^17.4.2",
-                         "express":  "^5.2.1",
-                         "helmet":  "^8.1.0",
-                         "jsonwebtoken":  "^9.0.3",
-                         "mongoose":  "^9.5.0",
-                         "morgan":  "^1.10.1",
-                         "pino":  "^10.3.1",
-                         "pino-http":  "^11.0.0",
-                         "zod":  "^4.3.6"
-                     },
-    "devDependencies":  {
-                            "eslint":  "^10.2.1",
-                            "jest":  "^30.3.0",
-                            "nodemon":  "^3.1.14",
-                            "supertest":  "^7.2.2"
-                        }
+    "name": "uk-trade-backend",
+    "version": "1.0.0",
+    "description": "",
+    "main": "src/server.js",
+    "scripts": {
+        "test": "jest --runInBand -c jest.config.cjs",
+        "test:api": "jest --runInBand -c jest.integration.config.cjs",
+        "dev": "nodemon src/server.js",
+        "start": "node src/server.js",
+        "seed": "node scripts/seed.js",
+        "seed:packages": "node scripts/seed-packages-and-plans.js",
+        "seed:holidays": "node scripts/seed-holidays.js",
+        "seed:network": "node scripts/seed-large-network.js",
+        "lint": "eslint ."
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/trisergetechnologies/uk-trade-backend.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "bugs": {
+        "url": "https://github.com/trisergetechnologies/uk-trade-backend/issues"
+    },
+    "homepage": "https://github.com/trisergetechnologies/uk-trade-backend#readme",
+    "dependencies": {
+        "bcryptjs": "^3.0.3",
+        "cloudinary": "^2.10.0",
+        "cors": "^2.8.6",
+        "dotenv": "^17.4.2",
+        "express": "^5.2.1",
+        "helmet": "^8.1.0",
+        "jsonwebtoken": "^9.0.3",
+        "mongoose": "^9.5.0",
+        "morgan": "^1.10.1",
+        "multer": "^2.1.1",
+        "pino": "^10.3.1",
+        "pino-http": "^11.0.0",
+        "zod": "^4.3.6"
+    },
+    "devDependencies": {
+        "eslint": "^10.2.1",
+        "jest": "^30.3.0",
+        "nodemon": "^3.1.14",
+        "supertest": "^7.2.2"
+    }
 }

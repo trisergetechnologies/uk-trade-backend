@@ -7,6 +7,11 @@ const paymentRequestSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     requestedAmount: { type: Number, required: true },
     approvedAmount: { type: Number, default: null },
+    screenshotAsset: {
+      publicId: { type: String, default: '' },
+      resourceType: { type: String, default: 'image' },
+      format: { type: String, default: 'jpg' },
+    },
     screenshotUrl: { type: String, default: '' },
     notes: { type: String, default: '' },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },

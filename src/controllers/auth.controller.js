@@ -1,4 +1,4 @@
-const { registerUser, loginUser } = require('../services/auth.service');
+const { registerUser, loginUser, changePassword } = require('../services/auth.service');
 const { User } = require('../models');
 const { AppError } = require('../utils/errors');
 
@@ -72,4 +72,13 @@ async function updateMe(req, res, next) {
   }
 }
 
-module.exports = { register, login, me, updateMe };
+async function updateMyPassword(req, res, next) {
+  try {
+    await changePassword(req.user.sub, req.validated.body.currentPassword, req.validated.body.newPassword);
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = { register, login, me, updateMe, updateMyPassword };

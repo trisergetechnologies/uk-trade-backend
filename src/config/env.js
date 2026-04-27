@@ -17,6 +17,10 @@ const env = {
   seedUserName: process.env.SEED_USER_NAME || 'Main User',
   seedSharedPassword:
     process.env.SEED_SHARED_PASSWORD || process.env.ADMIN_BOOTSTRAP_PASSWORD || 'UkTrade@Dev123',
+  cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+  cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
+  cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
+  cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'uk-trade',
 };
 
 module.exports = { env };

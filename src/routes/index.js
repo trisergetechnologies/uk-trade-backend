@@ -10,6 +10,7 @@ const incomeRoutes = require('./income.routes');
 const holidayRoutes = require('./holiday.routes');
 const bankAccountRoutes = require('./bank-account.routes');
 const fundTransferRoutes = require('./fund-transfer.routes');
+const adminRoutes = require('./admin.routes');
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use('/income', incomeRoutes);
 router.use('/holidays', holidayRoutes);
 router.use('/bank-account', bankAccountRoutes);
 router.use('/fund-transfers', fundTransferRoutes);
+router.use('/admin', adminRoutes);
 
 module.exports = router;

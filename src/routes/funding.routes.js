@@ -2,6 +2,7 @@ const express = require('express');
 const { authRequired, allowRoles } = require('../middlewares/auth.middleware');
 const { ROLES } = require('../constants/roles');
 const { validate } = require('../validators/validate');
+const { upload } = require('../middlewares/upload.middleware');
 const {
   createFundRequest,
   listMyFundRequests,
@@ -13,7 +14,7 @@ const { createFundRequestSchema, adminReviewFundSchema, adminGetFundRequestSchem
 
 const router = express.Router();
 
-router.post('/', authRequired, validate(createFundRequestSchema), createFundRequest);
+router.post('/', authRequired, upload.single('screenshot'), validate(createFundRequestSchema), createFundRequest);
 router.get('/me', authRequired, listMyFundRequests);
 router.get('/admin', authRequired, allowRoles(ROLES.ADMIN), adminListFundRequests);
 router.get('/admin/:id', authRequired, allowRoles(ROLES.ADMIN), validate(adminGetFundRequestSchema), adminGetFundRequest);

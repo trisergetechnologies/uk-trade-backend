@@ -75,6 +75,15 @@ async function loginUser(email, password) {
   return { user, token: signToken(user) };
 }
 
+async function changePassword(userId, currentPassword, newPassword) {
+  const user = await User.findById(userId).select('passwordHash');
+  if (!user) throw new AppError(404, 'User not found');
+  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!ok) throw new AppError(400, 'Current password is incorrect');
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  await user.save();
+}
+
 async function bootstrapAdmin() {
   const admin = await User.findOne({ role: ROLES.ADMIN });
   if (admin) return;
@@ -127,4 +136,4 @@ async function syncSeedUserPasswords() {
   return result.modifiedCount;
 }
 
-module.exports = { registerUser, loginUser, bootstrapAdmin, ensureSeedMainUser, syncSeedUserPasswords };
+module.exports = { registerUser, loginUser, changePassword, bootstrapAdmin, ensureSeedMainUser, syncSeedUserPasswords };

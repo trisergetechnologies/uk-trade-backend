@@ -2,9 +2,9 @@ const { z } = require('./validate');
 
 const createFundRequestSchema = z.object({
   body: z.object({
-    amount: z.number().positive(),
-    screenshotUrl: z.string().min(3).max(2_000_000),
-    notes: z.string().optional(),
+    amount: z.coerce.number().positive(),
+    notes: z.string().max(2000).optional(),
+    screenshotUrl: z.string().min(3).max(2_000_000).optional(),
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional(),
