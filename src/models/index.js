@@ -1,0 +1,17 @@
+module.exports = {
+  User: require('./user.model'),
+  TreeNode: require('./tree-node.model'),
+  Wallet: require('./wallet.model'),
+  WalletLedger: require('./wallet-ledger.model'),
+  PaymentRequest: require('./payment-request.model'),
+  Plan: require('./plan.model'),
+  PackageProduct: require('./package-product.model'),
+  PackageSubscription: require('./package-subscription.model'),
+  TradeCreditEvent: require('./trade-credit-event.model'),
+  SponsorIncomeEvent: require('./sponsor-income-event.model'),
+  WithdrawalRequest: require('./withdrawal-request.model'),
+  AuditLog: require('./audit-log.model'),
+  HolidayCalendar: require('./holiday-calendar.model'),
+  TradeJobRun: require('./trade-job-run.model'),
+  FundTransfer: require('./fund-transfer.model'),
+};
