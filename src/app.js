@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const pinoHttp = require('pino-http');
@@ -8,11 +7,16 @@ const routes = require('./routes');
 const { logger } = require('./utils/logger');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
 const { sanitizeApiResponses } = require('./middlewares/response-sanitize.middleware');
+const { createCorsMiddleware } = require('./middlewares/cors.middleware');
 
 const app = express();
 
-app.use(cors());
-app.use(helmet());
+app.use(createCorsMiddleware());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 app.use(pinoHttp({ logger }));

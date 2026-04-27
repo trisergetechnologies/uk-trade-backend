@@ -21,6 +21,27 @@ const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'uk-trade',
+  /**
+   * Browser origins allowed to call this API (comma-separated).
+   * Set CORS_ORIGINS on the server, e.g. https://uktrade.co.in,https://www.uktrade.co.in
+   */
+  corsOrigins: (() => {
+    const raw = process.env.CORS_ORIGINS;
+    if (raw === undefined || String(raw).trim() === '') {
+      return [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'https://uktrade.co.in',
+        'https://www.uktrade.co.in',
+      ];
+    }
+    return String(raw)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  })(),
+  /** Dev only: reflect any Origin (do not use in production unless you understand the risk). */
+  corsAllowAll: process.env.CORS_ALLOW_ALL === 'true' || process.env.CORS_ALLOW_ALL === '1',
 };
 
 module.exports = { env };
