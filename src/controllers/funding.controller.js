@@ -69,9 +69,17 @@ async function adminListFundRequests(req, res, next) {
         .populate('userId', 'name email'),
       PaymentRequest.countDocuments(filter),
     ]);
+    const data = list.map((row) => {
+      const base = row.toObject();
+      base.paymentProofPath =
+        row.screenshotAsset?.publicId || row.screenshotUrl
+          ? `/api/admin/media/payment-proof/${row.publicId}`
+          : '';
+      return base;
+    });
     res.json({
       success: true,
-      data: list,
+      data,
       meta: metaFor(page, limit, total),
     });
   } catch (error) {
