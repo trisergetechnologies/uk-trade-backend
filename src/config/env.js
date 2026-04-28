@@ -21,6 +21,8 @@ const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || '',
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'uk-trade',
+  matchingIncomeEnabled: String(process.env.MATCHING_INCOME_ENABLED || 'true').toLowerCase() === 'true',
+  matchingIncomePercent: Number(process.env.MATCHING_INCOME_PERCENT || 4),
 };
 
 module.exports = { env };

@@ -21,6 +21,7 @@ afterAll(async () => {
 describe('HTTP API (integration)', () => {
   let userToken;
   let adminToken;
+  let userPassword = env.seedSharedPassword;
 
   beforeAll(async () => {
     const u = await request(app).post('/api/auth/login').send({
@@ -38,6 +39,41 @@ describe('HTTP API (integration)', () => {
     expect(a.status).toBe(200);
     adminToken = a.body.data.token;
   });
+
+  async function registerAndLogin({ name, email, referralCode, community }) {
+    const reg = await request(app).post('/api/auth/register').send({
+      name,
+      email,
+      password: userPassword,
+      referralCode,
+      community,
+    });
+    expect(reg.status).toBe(201);
+    const login = await request(app).post('/api/auth/login').send({ email, password: userPassword });
+    expect(login.status).toBe(200);
+    return login.body.data.token;
+  }
+
+  async function addFundsAndBuyPackage(token, amount, packageCode = 'P01', planCode = 'A') {
+    const create = await request(app).post('/api/fund-requests').set('Authorization', `Bearer ${token}`).send({
+      amount,
+      screenshotUrl: 'https://example.com/proof.png',
+      notes: `funding ${amount}`,
+    });
+    expect(create.status).toBe(201);
+    const id = create.body.data.id;
+    const approve = await request(app)
+      .patch(`/api/fund-requests/admin/${id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved', approvedAmount: amount, reason: 'test approve' });
+    expect(approve.status).toBe(200);
+    const buy = await request(app)
+      .post('/api/packages/purchase')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ packageCode, planCode });
+    expect(buy.status).toBe(201);
+    return buy.body.data;
+  }
 
   it('GET /api/health', async () => {
     const res = await request(app).get('/api/health');
@@ -146,6 +182,9 @@ describe('HTTP API (integration)', () => {
     expect(t.status).toBe(200);
     const s = await request(app).get('/api/income/sponsor').set('Authorization', `Bearer ${userToken}`);
     expect(s.status).toBe(200);
+    const m = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    expect(m.status).toBe(200);
+    expect(Array.isArray(m.body.data)).toBe(true);
   });
 
   it('GET /api/network/tree', async () => {
@@ -182,5 +221,103 @@ describe('HTTP API (integration)', () => {
     expect(w.status).toBe(200);
     expect(w.body.meta).toMatchObject({ page: 1, limit: 10, total: expect.any(Number) });
     expect(Array.isArray(w.body.data)).toBe(true);
+  });
+
+  it('matching income full flow: first trigger gate, repeated equal events, and real-time payout', async () => {
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`);
+    expect(me.status).toBe(200);
+    const u1Referral = me.body.data.referralCode;
+
+    await addFundsAndBuyPackage(userToken, 10_000, 'P02', 'A');
+
+    const u2Token = await registerAndLogin({
+      name: 'U2 Right',
+      email: 'u2.right@example.com',
+      referralCode: u1Referral,
+      community: 'right',
+    });
+    const u3Token = await registerAndLogin({
+      name: 'U3 Left',
+      email: 'u3.left@example.com',
+      referralCode: u1Referral,
+      community: 'left',
+    });
+    await addFundsAndBuyPackage(u2Token, 5_000, 'P01', 'A');
+    await addFundsAndBuyPackage(u3Token, 10_000, 'P02', 'A');
+
+    const before = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    expect(before.status).toBe(200);
+    const beforeCredits = before.body.data.filter((x) => x.status === 'credited').length;
+
+    const u2Me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${u2Token}`);
+    const u3Me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${u3Token}`);
+    const u4Token = await registerAndLogin({
+      name: 'U4 Under U2',
+      email: 'u4.under.u2@example.com',
+      referralCode: u2Me.body.data.referralCode,
+      community: 'right',
+    });
+    await addFundsAndBuyPackage(u4Token, 5_000, 'P01', 'A');
+
+    const mid = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    expect(mid.status).toBe(200);
+    const midCredits = mid.body.data.filter((x) => x.status === 'credited').length;
+    expect(midCredits).toBeGreaterThanOrEqual(beforeCredits);
+
+    const u5Token = await registerAndLogin({
+      name: 'U5 Under U3',
+      email: 'u5.under.u3@example.com',
+      referralCode: u3Me.body.data.referralCode,
+      community: 'left',
+    });
+    await addFundsAndBuyPackage(u5Token, 10_000, 'P02', 'A');
+
+    const afterFirstEqual = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    const firstEqualCredits = afterFirstEqual.body.data.filter((x) => x.status === 'credited').length;
+    expect(firstEqualCredits).toBeGreaterThanOrEqual(midCredits);
+
+    const u6Token = await registerAndLogin({
+      name: 'U6 Under U2',
+      email: 'u6.under.u2@example.com',
+      referralCode: u2Me.body.data.referralCode,
+      community: 'left',
+    });
+    await addFundsAndBuyPackage(u6Token, 5_000, 'P01', 'A');
+
+    const u7Token = await registerAndLogin({
+      name: 'U7 Under U3',
+      email: 'u7.under.u3@example.com',
+      referralCode: u3Me.body.data.referralCode,
+      community: 'right',
+    });
+    await addFundsAndBuyPackage(u7Token, 10_000, 'P02', 'A');
+
+    const afterSecondEqual = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    const secondEqualCredits = afterSecondEqual.body.data.filter((x) => x.status === 'credited').length;
+    expect(secondEqualCredits).toBeGreaterThanOrEqual(firstEqualCredits);
+    expect(secondEqualCredits).toBeGreaterThan(beforeCredits);
+  });
+
+  it('matching income events keep trigger level bounded to 5 levels', async () => {
+    const chain = [];
+    let parentToken = userToken;
+    for (let i = 0; i < 6; i += 1) {
+      const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${parentToken}`);
+      const token = await registerAndLogin({
+        name: `Deep User ${i + 1}`,
+        email: `deep.user.${i + 1}@example.com`,
+        referralCode: me.body.data.referralCode,
+        community: i % 2 === 0 ? 'left' : 'right',
+      });
+      chain.push(token);
+      parentToken = token;
+    }
+
+    const level6Token = chain[5];
+    await addFundsAndBuyPackage(level6Token, 5_000, 'P01', 'A');
+
+    const u1After = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
+    expect(u1After.status).toBe(200);
+    expect(u1After.body.data.every((x) => Number(x.triggerLevelFromEarner) <= 5)).toBe(true);
   });
 });

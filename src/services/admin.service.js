@@ -1,5 +1,17 @@
 const mongoose = require('mongoose');
-const { AuditLog, PaymentRequest, User, WithdrawalRequest, Plan, PackageProduct, Wallet, PackageSubscription } = require('../models');
+const {
+  AuditLog,
+  MatchingIncomeEvent,
+  PackageProduct,
+  PackageSubscription,
+  PaymentRequest,
+  Plan,
+  SponsorIncomeEvent,
+  TradeCreditEvent,
+  User,
+  Wallet,
+  WithdrawalRequest,
+} = require('../models');
 
 function toStartOfDay(dateInput) {
   const d = new Date(dateInput);
@@ -12,13 +24,30 @@ async function getAdminOverview(days = 14) {
   const fromDate = new Date(now.getTime() - (Math.max(1, Number(days)) - 1) * 24 * 60 * 60 * 1000);
   const fromStart = toStartOfDay(fromDate);
 
-  const [totalUsers, activeUsers, pendingFundRequests, pendingWithdrawals, totalPlans, totalPackages, flowRows] = await Promise.all([
+  const [
+    totalUsers,
+    activeUsers,
+    pendingFundRequests,
+    pendingWithdrawals,
+    totalPlans,
+    totalPackages,
+    incomeTotals,
+    flowRows,
+  ] = await Promise.all([
     User.countDocuments({}),
     User.countDocuments({ isActive: true }),
     PaymentRequest.countDocuments({ status: 'pending' }),
     WithdrawalRequest.countDocuments({ status: 'pending' }),
     Plan.countDocuments({}),
     PackageProduct.countDocuments({}),
+    Promise.all([
+      TradeCreditEvent.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]),
+      SponsorIncomeEvent.aggregate([{ $group: { _id: null, total: { $sum: '$creditedAmount' } } }]),
+      MatchingIncomeEvent.aggregate([
+        { $match: { status: 'credited' } },
+        { $group: { _id: null, total: { $sum: '$payoutCreditedAmount' } } },
+      ]),
+    ]),
     Promise.all([
       PaymentRequest.aggregate([
         { $match: { createdAt: { $gte: fromStart } } },
@@ -38,6 +67,9 @@ async function getAdminOverview(days = 14) {
   const fundRequestsByDay = new Map(flowRows[0].map((r) => [r._id, Number(r.value || 0)]));
   const purchaseAmountByDay = new Map(flowRows[1].map((r) => [r._id, Number(r.value || 0)]));
   const approvedWithdrawalsByDay = new Map(flowRows[2].map((r) => [r._id, Number(r.value || 0)]));
+  const tradeIncomeTotal = Number(incomeTotals[0]?.[0]?.total || 0);
+  const sponsorIncomeTotal = Number(incomeTotals[1]?.[0]?.total || 0);
+  const matchingIncomeTotal = Number(incomeTotals[2]?.[0]?.total || 0);
   const series = [];
   for (let i = 0; i < days; i += 1) {
     const d = new Date(fromStart.getTime() + i * 24 * 60 * 60 * 1000);
@@ -59,6 +91,10 @@ async function getAdminOverview(days = 14) {
       pendingWithdrawals,
       totalPlans,
       totalPackages,
+      tradeIncomeTotal,
+      sponsorIncomeTotal,
+      matchingIncomeTotal,
+      totalIncome: tradeIncomeTotal + sponsorIncomeTotal + matchingIncomeTotal,
     },
     series,
   };

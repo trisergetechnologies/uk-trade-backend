@@ -2,6 +2,8 @@ const { Plan, PackageProduct, PackageSubscription } = require('../models');
 const { purchasePackage } = require('../services/trade.service');
 const { recalculateEligibility } = require('../services/eligibility.service');
 const { creditSponsorOnPurchase } = require('../services/sponsor.service');
+const { creditMatchingOnPurchase } = require('../services/matching.service');
+const { logger } = require('../utils/logger');
 
 async function listPlans(req, res, next) {
   try {
@@ -29,6 +31,11 @@ async function purchase(req, res, next) {
       packageCode: req.validated.body.packageCode,
     });
     await creditSponsorOnPurchase({ buyerUserId: req.user.sub, packageSubscriptionId: sub._id, purchaseAmount: sub.principalAmount });
+    try {
+      await creditMatchingOnPurchase({ triggerBuyerUserId: req.user.sub, triggerPurchaseSubscriptionId: sub._id });
+    } catch (matchingError) {
+      logger.error({ err: matchingError, buyerUserId: req.user.sub, packageSubscriptionId: sub._id }, 'matching income processing failed');
+    }
     await recalculateEligibility(req.user.sub);
     res.status(201).json({ success: true, data: sub });
   } catch (error) {

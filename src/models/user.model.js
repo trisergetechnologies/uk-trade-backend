@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema(
     preferredCommunity: { type: String, enum: ['left', 'right'], default: 'left' },
     treePlacedAt: { type: Date, default: null },
     isActive: { type: Boolean, default: true },
+    firstMatchingDone: { type: Boolean, default: false, index: true },
     bankAccount: {
       accountHolderName: { type: String, default: '' },
       bankName: { type: String, default: '' },

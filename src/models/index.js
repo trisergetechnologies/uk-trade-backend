@@ -9,6 +9,7 @@ module.exports = {
   PackageSubscription: require('./package-subscription.model'),
   TradeCreditEvent: require('./trade-credit-event.model'),
   SponsorIncomeEvent: require('./sponsor-income-event.model'),
+  MatchingIncomeEvent: require('./matching-income-event.model'),
   WithdrawalRequest: require('./withdrawal-request.model'),
   AuditLog: require('./audit-log.model'),
   HolidayCalendar: require('./holiday-calendar.model'),

@@ -1,5 +1,5 @@
 const express = require('express');
-const { SponsorIncomeEvent, TradeCreditEvent } = require('../models');
+const { MatchingIncomeEvent, SponsorIncomeEvent, TradeCreditEvent } = require('../models');
 const { authRequired } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
@@ -22,12 +22,13 @@ router.get('/sponsor', authRequired, async (req, res, next) => {
   }
 });
 
-router.get('/matching', authRequired, async (req, res) => {
-  res.json({
-    success: true,
-    data: [],
-    message: 'Matching income is not specified in BUSINESS-LOGIC yet (§9).',
-  });
+router.get('/matching', authRequired, async (req, res, next) => {
+  try {
+    const rows = await MatchingIncomeEvent.find({ earnerUserId: req.user.sub }).sort({ createdAt: -1 });
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;
