@@ -128,6 +128,36 @@ async function adminCreatePackage(req, res, next) {
   }
 }
 
+async function adminUpdatePlan(req, res, next) {
+  try {
+    const { code } = req.validated.params;
+    const updated = await Plan.findOneAndUpdate(
+      { code },
+      { $set: req.validated.body },
+      { new: true, runValidators: true }
+    );
+    if (!updated) throw new AppError(404, 'Plan not found');
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminUpdatePackage(req, res, next) {
+  try {
+    const { code } = req.validated.params;
+    const updated = await PackageProduct.findOneAndUpdate(
+      { code },
+      { $set: req.validated.body },
+      { new: true, runValidators: true }
+    );
+    if (!updated) throw new AppError(404, 'Package not found');
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   adminOverview,
   adminListUsers,
@@ -137,6 +167,8 @@ module.exports = {
   adminGetPaymentProof,
   adminListPlans,
   adminCreatePlan,
+  adminUpdatePlan,
   adminListPackages,
   adminCreatePackage,
+  adminUpdatePackage,
 };
