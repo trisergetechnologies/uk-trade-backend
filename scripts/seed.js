@@ -1,16 +1,18 @@
 /**
  * One-off DB seed: default plans + bootstrap admin (if missing) + main user (if missing).
- * Run after Mongo is up: `npm run seed`
+ * Run after Mongo is up: `PROD_PROTECT=false npm run seed`
  */
 const mongoose = require('mongoose');
 const { env } = require('../src/config/env');
 const { connectDb } = require('../src/db/connect');
+const { assertSeedingAllowed } = require('../src/utils/seed-guard');
 const { bootstrapAdmin, ensureSeedMainUser, syncSeedUserPasswords } = require('../src/services/auth.service');
 const { seedDefaultPlans } = require('../src/services/plan.service');
 const { HolidayCalendar } = require('../src/models');
 const { logger } = require('../src/utils/logger');
 
 async function main() {
+  assertSeedingAllowed();
   await connectDb();
   await seedDefaultPlans();
   const holidays2026 = [

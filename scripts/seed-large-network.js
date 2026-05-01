@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { connectDb } = require('../src/db/connect');
 const { env } = require('../src/config/env');
+const { assertSeedingAllowed } = require('../src/utils/seed-guard');
 const { User, Wallet, TreeNode } = require('../src/models');
 const { bootstrapAdmin, ensureSeedMainUser } = require('../src/services/auth.service');
 const { logger } = require('../src/utils/logger');
@@ -21,6 +22,7 @@ function parseArg(name, fallback) {
 }
 
 async function main() {
+  assertSeedingAllowed();
   const totalUsers = Math.max(200, parseArg('total', 2000));
   const targetDepth = Math.max(15, parseArg('depth', 45));
 

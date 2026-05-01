@@ -5,10 +5,12 @@
  */
 const mongoose = require('mongoose');
 const { connectDb } = require('../src/db/connect');
+const { assertSeedingAllowed } = require('../src/utils/seed-guard');
 const { seedPackageCatalog } = require('../src/services/package-product.service');
 const { logger } = require('../src/utils/logger');
 
 async function main() {
+  assertSeedingAllowed();
   await connectDb();
   await seedPackageCatalog();
   logger.info('seed-packages-and-plans: done');

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { connectDb } = require('../src/db/connect');
+const { assertSeedingAllowed } = require('../src/utils/seed-guard');
 const { HolidayCalendar } = require('../src/models');
 const { logger } = require('../src/utils/logger');
 
@@ -36,6 +37,7 @@ async function seedHolidays(exchange = 'NSE') {
 }
 
 async function main() {
+  assertSeedingAllowed();
   await connectDb();
   const upserts = await seedHolidays('NSE');
   logger.info({ exchange: 'NSE', rows: HOLIDAYS_2026.length, upserts }, '2026 holidays seeded');

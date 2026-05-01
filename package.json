@@ -9,6 +9,7 @@
         "dev": "nodemon src/server.js",
         "start": "node src/server.js",
         "seed": "node scripts/seed.js",
+        "seed:reset-users": "node scripts/seed-reset-users.js",
         "seed:packages": "node scripts/seed-packages-and-plans.js",
         "seed:holidays": "node scripts/seed-holidays.js",
         "seed:network": "node scripts/seed-large-network.js",
