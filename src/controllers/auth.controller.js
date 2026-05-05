@@ -1,4 +1,4 @@
-const { registerUser, loginUser, changePassword } = require('../services/auth.service');
+const { registerUser, loginUser, changePassword, findReferrerByReferralCode } = require('../services/auth.service');
 const { User } = require('../models');
 const { AppError } = require('../utils/errors');
 
@@ -13,6 +13,7 @@ function publicUser(userDoc) {
     role: u.role,
     referralCode: u.referralCode,
     preferredCommunity: u.preferredCommunity,
+    kycStatus: u.kyc?.status || 'unverified',
   };
 }
 
@@ -36,7 +37,7 @@ async function login(req, res, next) {
 
 async function me(req, res, next) {
   try {
-    const doc = await User.findById(req.user.sub).select('userCode name email role referralCode preferredCommunity');
+    const doc = await User.findById(req.user.sub).select('userCode name email role referralCode preferredCommunity kyc.status');
     if (!doc) return next(new AppError(404, 'User not found'));
     res.json({ success: true, data: publicUser(doc) });
   } catch (error) {
@@ -58,12 +59,14 @@ async function updateMe(req, res, next) {
       updates.email = nextEmail;
     }
     if (!Object.keys(updates).length) {
-      const current = await User.findById(req.user.sub).select('userCode name email role referralCode preferredCommunity');
+      const current = await User.findById(req.user.sub).select(
+        'userCode name email role referralCode preferredCommunity kyc.status'
+      );
       if (!current) throw new AppError(404, 'User not found');
       return res.json({ success: true, data: publicUser(current) });
     }
     const doc = await User.findByIdAndUpdate(req.user.sub, { $set: updates }, { new: true }).select(
-      'userCode name email role referralCode preferredCommunity'
+      'userCode name email role referralCode preferredCommunity kyc.status'
     );
     if (!doc) throw new AppError(404, 'User not found');
     res.json({ success: true, data: publicUser(doc) });
@@ -81,4 +84,15 @@ async function updateMyPassword(req, res, next) {
   }
 }
 
-module.exports = { register, login, me, updateMe, updateMyPassword };
+async function referrerLookup(req, res, next) {
+  try {
+    const code = String(req.validated.query.code || '').trim();
+    const u = await findReferrerByReferralCode(code);
+    if (!u) return next(new AppError(404, 'Referrer not found'));
+    res.json({ success: true, data: { name: u.name, userCode: u.userCode } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = { register, login, me, updateMe, updateMyPassword, referrerLookup };

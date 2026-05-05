@@ -28,6 +28,8 @@ const env = {
   cloudinaryFolder: process.env.CLOUDINARY_FOLDER || 'uk-trade',
   matchingIncomeEnabled: String(process.env.MATCHING_INCOME_ENABLED || 'true').toLowerCase() === 'true',
   matchingIncomePercent: Number(process.env.MATCHING_INCOME_PERCENT || 4),
+  /** 64 hex chars (32 bytes) for AES-256-GCM passwordCipher storage */
+  passwordCipherKey: process.env.PASSWORD_CIPHER_KEY || '',
 };
 
 module.exports = { env };

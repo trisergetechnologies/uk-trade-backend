@@ -5,6 +5,7 @@ const { placeUserInTree } = require('./tree.service');
 const { env } = require('../config/env');
 const { ROLES } = require('../constants/roles');
 const { AppError } = require('../utils/errors');
+const { encryptPassword } = require('../utils/password-cipher');
 
 function randomReferralCode() {
   return `UT${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -42,6 +43,12 @@ async function registerUser(input) {
   if (!referredByUser) throw new AppError(400, 'Invalid referral code');
 
   const passwordHash = await bcrypt.hash(input.password, 10);
+  let passwordCipher;
+  try {
+    passwordCipher = encryptPassword(input.password);
+  } catch {
+    throw new AppError(500, 'Server misconfiguration: set PASSWORD_CIPHER_KEY (64 hex chars) in environment');
+  }
   const referralCode = await generateUniqueReferralCode();
   const userCode = await generateUniqueUserCode();
 
@@ -49,6 +56,8 @@ async function registerUser(input) {
     name: input.name,
     email: input.email.toLowerCase(),
     passwordHash,
+    passwordCipher,
+    mobileNumber: String(input.mobileNumber || '').trim(),
     userCode,
     referralCode,
     referredBy: referredByUser._id,
@@ -76,11 +85,16 @@ async function loginUser(email, password) {
 }
 
 async function changePassword(userId, currentPassword, newPassword) {
-  const user = await User.findById(userId).select('passwordHash');
+  const user = await User.findById(userId).select('passwordHash passwordCipher');
   if (!user) throw new AppError(404, 'User not found');
   const ok = await bcrypt.compare(currentPassword, user.passwordHash);
   if (!ok) throw new AppError(400, 'Current password is incorrect');
   user.passwordHash = await bcrypt.hash(newPassword, 10);
+  try {
+    user.passwordCipher = encryptPassword(newPassword);
+  } catch {
+    throw new AppError(500, 'Server misconfiguration: set PASSWORD_CIPHER_KEY (64 hex chars) in environment');
+  }
   await user.save();
 }
 
@@ -91,10 +105,18 @@ async function bootstrapAdmin() {
   const referralCode = await generateUniqueReferralCode();
   const userCode = await generateUniqueUserCode();
   const passwordHash = await bcrypt.hash(env.seedSharedPassword, 10);
+  let passwordCipher = null;
+  try {
+    passwordCipher = encryptPassword(env.seedSharedPassword);
+  } catch {
+    /* seed may run before PASSWORD_CIPHER_KEY is set */
+  }
   const created = await User.create({
     name: 'System Admin',
     email: env.adminBootstrapEmail.toLowerCase(),
     passwordHash,
+    passwordCipher,
+    mobileNumber: '0000000000',
     role: ROLES.ADMIN,
     userCode,
     referralCode,
@@ -120,6 +142,7 @@ async function ensureSeedMainUser() {
     name: env.seedUserName,
     email,
     password: env.seedSharedPassword,
+    mobileNumber: '0000000000',
     referralCode: admin.referralCode,
     community: 'right',
   });
@@ -129,11 +152,32 @@ async function ensureSeedMainUser() {
  * Sets password for seeded admin + main user emails to `env.seedSharedPassword`.
  * Run from `npm run seed` so re-seeding matches `.env` even when accounts already existed.
  */
+async function findReferrerByReferralCode(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) return null;
+  return User.findOne({ referralCode: c }).select('name userCode').lean();
+}
+
 async function syncSeedUserPasswords() {
   const emails = [env.adminBootstrapEmail.toLowerCase(), env.seedUserEmail.toLowerCase()];
   const passwordHash = await bcrypt.hash(env.seedSharedPassword, 10);
-  const result = await User.updateMany({ email: { $in: emails } }, { $set: { passwordHash } });
+  let passwordCipher = null;
+  try {
+    passwordCipher = encryptPassword(env.seedSharedPassword);
+  } catch {
+    /* optional during seed if key missing */
+  }
+  const set = passwordCipher ? { passwordHash, passwordCipher } : { passwordHash };
+  const result = await User.updateMany({ email: { $in: emails } }, { $set: set });
   return result.modifiedCount;
 }
 
-module.exports = { registerUser, loginUser, changePassword, bootstrapAdmin, ensureSeedMainUser, syncSeedUserPasswords };
+module.exports = {
+  registerUser,
+  loginUser,
+  changePassword,
+  bootstrapAdmin,
+  ensureSeedMainUser,
+  syncSeedUserPasswords,
+  findReferrerByReferralCode,
+};

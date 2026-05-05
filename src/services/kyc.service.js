@@ -1,0 +1,174 @@
+const { User, AuditLog } = require('../models');
+const { AppError } = require('../utils/errors');
+const { uploadKycDocument } = require('./cloudinary.service');
+const { parsePagination, metaFor } = require('../utils/pagination');
+
+const KYC_KINDS = ['aadhaarFront', 'aadhaarBack', 'pan', 'photo'];
+
+function kycSummary(user) {
+  const k = user.kyc || {};
+  return {
+    status: k.status || 'unverified',
+    submittedAt: k.submittedAt || null,
+    reviewedAt: k.reviewedAt || null,
+    reviewReason: k.reviewReason || '',
+  };
+}
+
+function pickAsset(user, kind) {
+  const k = user.kyc || {};
+  if (kind === 'aadhaarFront') return k.aadhaarFrontAsset;
+  if (kind === 'aadhaarBack') return k.aadhaarBackAsset;
+  if (kind === 'pan') return k.panAsset;
+  if (kind === 'photo') return k.photoAsset;
+  return null;
+}
+
+async function submitMyKyc(userId, fileMap) {
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(404, 'User not found');
+
+  const current = user.kyc?.status || 'unverified';
+  if (current === 'approved') {
+    throw new AppError(400, 'KYC is already approved');
+  }
+
+  const aadhaarFront = fileMap.aadhaarFront?.[0];
+  const aadhaarBack = fileMap.aadhaarBack?.[0];
+  const pan = fileMap.pan?.[0];
+  const photo = fileMap.photo?.[0];
+  if (!aadhaarFront?.buffer || !aadhaarBack?.buffer || !pan?.buffer || !photo?.buffer) {
+    throw new AppError(400, 'Aadhaar front, Aadhaar back, PAN, and photo images are required');
+  }
+
+  const [aadhaarFrontAsset, aadhaarBackAsset, panAsset, photoAsset] = await Promise.all([
+    uploadKycDocument(aadhaarFront.buffer, aadhaarFront.originalname, 'aadhaar-front'),
+    uploadKycDocument(aadhaarBack.buffer, aadhaarBack.originalname, 'aadhaar-back'),
+    uploadKycDocument(pan.buffer, pan.originalname, 'pan'),
+    uploadKycDocument(photo.buffer, photo.originalname, 'photo'),
+  ]);
+
+  user.kyc = {
+    status: 'pending',
+    aadhaarFrontAsset,
+    aadhaarBackAsset,
+    panAsset,
+    photoAsset,
+    submittedAt: new Date(),
+    reviewedBy: null,
+    reviewReason: '',
+    reviewedAt: null,
+  };
+  await user.save();
+
+  await AuditLog.create({
+    actorUserId: userId,
+    action: 'kyc_submitted',
+    targetType: 'User',
+    targetId: user._id,
+    details: { status: 'pending' },
+  });
+
+  return kycSummary(user);
+}
+
+async function getMyKyc(userId) {
+  const user = await User.findById(userId).select('kyc');
+  if (!user) throw new AppError(404, 'User not found');
+  return kycSummary(user);
+}
+
+async function adminListKyc(req) {
+  const { page, limit, skip } = parsePagination(req);
+  const statusRaw = String(req.query.status || 'pending').toLowerCase();
+  const q = String(req.query.q || '').trim();
+
+  const filter = {};
+  if (statusRaw !== 'all') {
+    if (statusRaw === 'unverified') {
+      filter.$or = [{ 'kyc.status': 'unverified' }, { kyc: { $exists: false } }];
+    } else if (['pending', 'approved', 'rejected'].includes(statusRaw)) {
+      filter['kyc.status'] = statusRaw;
+    } else {
+      filter['kyc.status'] = 'pending';
+    }
+  }
+
+  if (q) {
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp(escaped, 'i');
+    const searchCond = { $or: [{ name: rx }, { email: rx }, { userCode: rx }] };
+    if (filter.$or) {
+      filter.$and = [{ $or: filter.$or }, searchCond];
+      delete filter.$or;
+    } else {
+      Object.assign(filter, searchCond);
+    }
+  }
+
+  const [list, total] = await Promise.all([
+    User.find(filter)
+      .select('name email userCode kyc createdAt')
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(filter),
+  ]);
+
+  const data = list.map((row) => ({
+    userCode: row.userCode,
+    name: row.name,
+    email: row.email,
+    kyc: kycSummary({ kyc: row.kyc }),
+    createdAt: row.createdAt,
+  }));
+
+  return { data, meta: metaFor(page, limit, total) };
+}
+
+async function adminReviewKyc(adminUserId, userCode, status, reason) {
+  const code = String(userCode || '').trim().toUpperCase();
+  const user = await User.findOne({ userCode: code });
+  if (!user) throw new AppError(404, 'User not found');
+  if (user.kyc?.status !== 'pending') {
+    throw new AppError(400, 'This user has no pending KYC submission');
+  }
+
+  user.kyc.status = status;
+  user.kyc.reviewedBy = adminUserId;
+  user.kyc.reviewReason = reason || '';
+  user.kyc.reviewedAt = new Date();
+  await user.save();
+
+  await AuditLog.create({
+    actorUserId: adminUserId,
+    action: 'kyc_reviewed',
+    targetType: 'User',
+    targetId: user._id,
+    details: { userCode: code, status, reason },
+  });
+
+  return { userCode: user.userCode, name: user.name, email: user.email, kyc: kycSummary(user) };
+}
+
+function assertKycApproved(user) {
+  const st = user.kyc?.status || 'unverified';
+  if (st !== 'approved') {
+    throw new AppError(
+      400,
+      'Complete KYC (Aadhaar front & back, PAN, photo) and wait for admin approval before withdrawing'
+    );
+  }
+}
+
+module.exports = {
+  KYC_KINDS,
+  kycSummary,
+  pickAsset,
+  submitMyKyc,
+  getMyKyc,
+  adminListKyc,
+  adminReviewKyc,
+  assertKycApproved,
+};

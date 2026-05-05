@@ -106,6 +106,71 @@ const adminPatchPackageSchema = z
     message: 'At least one field is required',
   });
 
+const adminLookupUserParamSchema = z.object({
+  params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
+  body: z.object({}).optional(),
+  query: z.object({}).optional(),
+});
+
+const adminCreditWalletSchema = z.object({
+  params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
+  body: z.object({
+    amount: z.number().positive(),
+    note: z.string().max(500).optional(),
+  }),
+  query: z.object({}).optional(),
+});
+
+const adminPurchaseOnBehalfSchema = z.object({
+  params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
+  body: z.object({
+    planCode: z.string().trim().min(1).max(20).transform((s) => String(s).toUpperCase()),
+    packageCode: z.string().trim().min(1).max(20).transform((s) => String(s).toUpperCase()),
+  }),
+  query: z.object({}).optional(),
+});
+
+const adminCommunityUsersSchema = z.object({
+  query: z.object({
+    community: z.enum(['left', 'right']),
+    q: z.string().optional(),
+  }),
+  params: z.object({}).optional(),
+  body: z.object({}).optional(),
+});
+
+const adminUserTeamTreeSchema = z.object({
+  params: z.object({
+    userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
+  }),
+  query: z.object({
+    depth: z.string().optional(),
+    nodes: z.string().optional(),
+  }),
+  body: z.object({}).optional(),
+});
+
+const adminUserTeamTreeChildrenSchema = z.object({
+  params: z.object({
+    userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
+  }),
+  query: z.object({
+    parentUserCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
+    limit: z.string().optional(),
+  }),
+  body: z.object({}).optional(),
+});
+
+const adminUserTeamFocusSchema = z.object({
+  params: z.object({
+    userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
+  }),
+  query: z.object({
+    targetUserCode: z.string().trim().max(64).optional(),
+  }),
+  body: z.object({}).optional(),
+});
+
 module.exports = {
   adminUserCodeParamSchema,
   adminSetUserStatusSchema,
@@ -114,4 +179,11 @@ module.exports = {
   adminCreatePackageSchema,
   adminPatchPlanSchema,
   adminPatchPackageSchema,
+  adminLookupUserParamSchema,
+  adminCreditWalletSchema,
+  adminPurchaseOnBehalfSchema,
+  adminCommunityUsersSchema,
+  adminUserTeamTreeSchema,
+  adminUserTeamTreeChildrenSchema,
+  adminUserTeamFocusSchema,
 };

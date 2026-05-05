@@ -1,8 +1,25 @@
-const { PackageProduct, PaymentRequest, Plan } = require('../models');
+const { AuditLog, PackageProduct, PaymentRequest, Plan, User } = require('../models');
 const { AppError } = require('../utils/errors');
 const { parsePagination, metaFor } = require('../utils/pagination');
 const { getSignedDownloadUrl } = require('../services/cloudinary.service');
-const { getAdminOverview, getAdminUserDetail, listAdminUsers, setAdminUserStatus, listAuditLogs } = require('../services/admin.service');
+const {
+  getAdminOverview,
+  getAdminUserDetail,
+  listAdminUsers,
+  listAdminUsersWithPasswords,
+  setAdminUserStatus,
+  listAuditLogs,
+  lookupUserByCode,
+  adminCreditUserWallet,
+  listCommunityUsers,
+} = require('../services/admin.service');
+const { purchasePackage } = require('../services/trade.service');
+const { recalculateEligibility } = require('../services/eligibility.service');
+const { creditSponsorOnPurchase } = require('../services/sponsor.service');
+const { creditMatchingOnPurchase } = require('../services/matching.service');
+const { logger } = require('../utils/logger');
+const { getMyTeamTree, getMyTeamTreeChildren, getMyTeamFocusWindow } = require('../services/tree.service');
+const { decryptPassword } = require('../utils/password-cipher');
 
 async function adminOverview(req, res, next) {
   try {
@@ -22,6 +39,26 @@ async function adminListUsers(req, res, next) {
     const isActiveRaw = String(req.query.isActive || '').trim().toLowerCase();
     const isActive = isActiveRaw === '' ? undefined : isActiveRaw === 'true';
     const { rows, total } = await listAdminUsers({ page, limit, q, role, isActive });
+    res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminListUsersPasswords(req, res, next) {
+  try {
+    const { page, limit } = parsePagination(req);
+    const q = String(req.query.q || '').trim();
+    const role = String(req.query.role || '').trim() || undefined;
+    const isActiveRaw = String(req.query.isActive || '').trim().toLowerCase();
+    const isActive = isActiveRaw === '' ? undefined : isActiveRaw === 'true';
+    const { rows, total } = await listAdminUsersWithPasswords({ page, limit, q, role, isActive });
+    await AuditLog.create({
+      actorUserId: req.user.sub,
+      action: 'admin_list_user_passwords',
+      targetType: 'System',
+      details: { page, limit, q: q || null, role: role || null, returnedCount: rows.length },
+    });
     res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
   } catch (error) {
     next(error);
@@ -158,11 +195,154 @@ async function adminUpdatePackage(req, res, next) {
   }
 }
 
+async function adminLookupUser(req, res, next) {
+  try {
+    const row = await lookupUserByCode(req.validated.params.userCode);
+    if (!row) throw new AppError(404, 'User not found');
+    res.json({ success: true, data: row });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminCreditUser(req, res, next) {
+  try {
+    const { userCode } = req.validated.params;
+    const { amount, note } = req.validated.body;
+    const transfer = await adminCreditUserWallet({
+      adminUserId: req.user.sub,
+      toUserCode: userCode,
+      amount,
+      note,
+    });
+    res.status(201).json({ success: true, data: transfer });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminPurchaseForUser(req, res, next) {
+  try {
+    const { userCode } = req.validated.params;
+    const { planCode, packageCode } = req.validated.body;
+    const target = await User.findOne({ userCode }).select('_id');
+    if (!target) throw new AppError(404, 'User not found');
+    const sub = await purchasePackage({ userId: target._id, planCode, packageCode });
+    await creditSponsorOnPurchase({ buyerUserId: target._id, packageSubscriptionId: sub._id, purchaseAmount: sub.principalAmount });
+    try {
+      await creditMatchingOnPurchase({ triggerBuyerUserId: target._id, triggerPurchaseSubscriptionId: sub._id });
+    } catch (matchingError) {
+      logger.error({ err: matchingError, buyerUserId: target._id, packageSubscriptionId: sub._id }, 'matching income processing failed');
+    }
+    await recalculateEligibility(target._id);
+    await AuditLog.create({
+      actorUserId: req.user.sub,
+      action: 'admin_package_purchase_on_behalf',
+      targetType: 'User',
+      targetId: target._id,
+      details: { targetUserCode: userCode, planCode, packageCode, packageSubscriptionId: String(sub._id) },
+    });
+    res.status(201).json({ success: true, data: sub });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminGetUserPassword(req, res, next) {
+  try {
+    const { userCode } = req.validated.params;
+    const user = await User.findOne({ userCode }).select('_id passwordCipher');
+    if (!user) throw new AppError(404, 'User not found');
+    let password = null;
+    try {
+      password = decryptPassword(user.passwordCipher);
+    } catch {
+      password = null;
+    }
+    await AuditLog.create({
+      actorUserId: req.user.sub,
+      action: 'admin_view_user_password',
+      targetType: 'User',
+      targetId: user._id,
+      details: { targetUserCode: userCode },
+    });
+    res.json({ success: true, data: { password } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminCommunityUsers(req, res, next) {
+  try {
+    const { page, limit } = parsePagination(req);
+    const community = req.validated.query.community;
+    const q = String(req.validated.query.q || '').trim();
+    const { rows, total } = await listCommunityUsers({ community, page, limit, q });
+    res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminUserTeamTree(req, res, next) {
+  try {
+    const rootCode = req.validated.params.userCode;
+    const root = await User.findOne({ userCode: rootCode }).select('_id');
+    if (!root) throw new AppError(404, 'User not found');
+    const depthRaw = Number.parseInt(String(req.validated.query.depth ?? req.query.depth ?? '6'), 10);
+    const nodesRaw = Number.parseInt(String(req.validated.query.nodes ?? req.query.nodes ?? '500'), 10);
+    const depth = Math.max(1, Math.min(30, Number.isFinite(depthRaw) ? depthRaw : 6));
+    const nodes = Math.max(50, Math.min(5000, Number.isFinite(nodesRaw) ? nodesRaw : 500));
+    const data = await getMyTeamTree(root._id, { maxDepth: depth, maxNodes: nodes });
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminUserTeamTreeChildren(req, res, next) {
+  try {
+    const rootCode = req.validated.params.userCode;
+    const root = await User.findOne({ userCode: rootCode }).select('_id');
+    if (!root) throw new AppError(404, 'User not found');
+    const { parentUserCode } = req.validated.query;
+    const limitRaw = Number.parseInt(String(req.validated.query.limit ?? req.query.limit ?? '120'), 10);
+    const lim = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 120));
+    const data = await getMyTeamTreeChildren(root._id, { parentUserCode, limit: lim, asAdmin: true });
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminUserTeamFocus(req, res, next) {
+  try {
+    const rootCode = req.validated.params.userCode;
+    const root = await User.findOne({ userCode: rootCode }).select('_id');
+    if (!root) throw new AppError(404, 'User not found');
+    const raw = req.validated.query.targetUserCode;
+    const targetUserCode = raw && String(raw).trim() ? String(raw).trim().toUpperCase() : '';
+    const data = await getMyTeamFocusWindow(root._id, { targetUserCode, asAdmin: true });
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   adminOverview,
   adminListUsers,
+  adminListUsersPasswords,
+  adminLookupUser,
   adminGetUser,
   adminSetUserStatus,
+  adminCreditUser,
+  adminPurchaseForUser,
+  adminGetUserPassword,
+  adminCommunityUsers,
+  adminUserTeamTree,
+  adminUserTeamTreeChildren,
+  adminUserTeamFocus,
   adminListAuditLogs,
   adminGetPaymentProof,
   adminListPlans,

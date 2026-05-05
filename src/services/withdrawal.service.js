@@ -1,7 +1,20 @@
 const { WithdrawalRequest, AuditLog, User } = require('../models');
 const { getWalletOrThrow, debitWallet } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
+const { assertKycApproved } = require('./kyc.service');
 const { AppError } = require('../utils/errors');
+
+const OBJECT_ID_HEX = /^[a-fA-F0-9]{24}$/;
+
+async function findWithdrawalForAdminReview(requestId) {
+  const rid = String(requestId || '').trim();
+  if (!rid) return null;
+  if (OBJECT_ID_HEX.test(rid)) {
+    const byId = await WithdrawalRequest.findById(rid);
+    if (byId) return byId;
+  }
+  return WithdrawalRequest.findOne({ publicId: rid });
+}
 
 async function createWithdrawalRequest(userId, amount) {
   await recalculateEligibility(userId);
@@ -14,6 +27,7 @@ async function createWithdrawalRequest(userId, amount) {
   }
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, 'User not found');
+  assertKycApproved(user);
   const bank = user.bankAccount || {};
   const hasBankAccount = Boolean(
     String(bank.accountHolderName || '').trim() &&
@@ -42,7 +56,7 @@ async function createWithdrawalRequest(userId, amount) {
 }
 
 async function reviewWithdrawalRequest(adminUserId, requestId, status, reason) {
-  const request = await WithdrawalRequest.findOne({ publicId: requestId });
+  const request = await findWithdrawalForAdminReview(requestId);
   if (!request) throw new AppError(404, 'Withdrawal request not found');
   if (request.status !== 'pending') throw new AppError(400, 'Request already reviewed');
 

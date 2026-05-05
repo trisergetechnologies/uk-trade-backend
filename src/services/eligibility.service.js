@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { addIstDays, toIstDateParts, istDateCompare } = require('../utils/date-utils');
-const { PackageSubscription, TradeCreditEvent, WithdrawalRequest, Wallet } = require('../models');
+const { PackageSubscription, TradeCreditEvent, WithdrawalRequest, Wallet, SponsorIncomeEvent } = require('../models');
 const { getWalletOrThrow } = require('./wallet.service');
 
 function firstDayAfterWithdrawalCycleK(withdrawalDay1Ist, W, cycleK) {
@@ -50,6 +50,16 @@ async function computeGrossEligibleTrade(userId, todayIst) {
   return total;
 }
 
+/** Sponsor income credited to the wallet is always fully withdrawable (no W-cycle gates). */
+async function computeTotalSponsorCredited(userId) {
+  const uid = new mongoose.Types.ObjectId(userId);
+  const rows = await SponsorIncomeEvent.aggregate([
+    { $match: { referrerUserId: uid } },
+    { $group: { _id: null, t: { $sum: '$creditedAmount' } } },
+  ]);
+  return Number(rows[0]?.t || 0);
+}
+
 async function sumWithdrawalsByStatus(userId, status) {
   const uid = new mongoose.Types.ObjectId(userId);
   const rows = await WithdrawalRequest.aggregate([
@@ -61,11 +71,13 @@ async function sumWithdrawalsByStatus(userId, status) {
 
 async function recalculateEligibility(userId, todayIst = null) {
   const today = todayIst || toIstDateParts(new Date()).isoDate;
-  await getWalletOrThrow(userId);
-  const gross = await computeGrossEligibleTrade(userId, today);
+  const wallet = await getWalletOrThrow(userId);
+  const tradeGross = await computeGrossEligibleTrade(userId, today);
+  const sponsorGross = await computeTotalSponsorCredited(userId);
   const approved = await sumWithdrawalsByStatus(userId, 'approved');
   const pending = await sumWithdrawalsByStatus(userId, 'pending');
-  const net = Math.max(0, gross - approved - pending);
+  const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
+  const net = Math.max(0, tradeGross + sponsorGross + bonus - approved - pending);
   await Wallet.updateOne({ userId }, { $set: { eligibleToWithdraw: net } });
   return getWalletOrThrow(userId);
 }
@@ -87,6 +99,7 @@ module.exports = {
   firstDayAfterWithdrawalCycleK,
   cycleEndInclusive,
   grossEligibleForSubscription,
+  computeTotalSponsorCredited,
   recalculateEligibility,
   recalculateEligibilityForUsers,
   recalculateEligibilityForAllPortfolioUsers,

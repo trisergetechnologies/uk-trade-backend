@@ -282,16 +282,16 @@ async function getMyTeamTree(userId, { maxDepth = 6, maxNodes = 500 } = {}) {
   };
 }
 
-async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100 } = {}) {
+async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100, asAdmin = false } = {}) {
   if (!parentUserCode) throw new AppError(400, 'parentUserCode is required');
 
   await ensureUserCodeForUser(userId);
   const me = await User.findById(userId).select('_id userCode name').lean();
   if (!me) throw new AppError(404, 'User not found');
-  const target = await User.findOne({ userCode: parentUserCode }).select('_id userCode').lean();
+  const target = await User.findOne({ userCode: parentUserCode }).select('_id userCode name').lean();
   if (!target) throw new AppError(404, 'Parent user not found');
 
-  if (String(target._id) !== String(me._id)) {
+  if (!asAdmin && String(target._id) !== String(me._id)) {
     const descendants = await collectDownlineDescendants(userId);
     const allowed = descendants.some((d) => String(d.userId) === String(target._id));
     if (!allowed) throw new AppError(403, 'You can only access your own team tree');
@@ -325,7 +325,7 @@ async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100 } = {
       memberEmail: member?.email || '',
       memberIsActive: !!member?.isActive,
       sponsorUserCode: parentUserCode,
-      sponsorName: me.userCode === parentUserCode ? me.name : '',
+      sponsorName: target?.name || '',
       side: node.side,
       community: node.community,
       level: Number(node.level || 0),
@@ -353,7 +353,7 @@ function toTreeCard(node, member, sponsor, childrenCount = 0) {
   };
 }
 
-async function getMyTeamFocusWindow(userId, { targetUserCode = '' } = {}) {
+async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = false } = {}) {
   await ensureUserCodeForUser(userId);
   const viewer = await User.findById(userId).select('_id userCode name email isActive createdAt').lean();
   if (!viewer) throw new AppError(404, 'User not found');
@@ -373,7 +373,6 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '' } = {}) {
   const targetNode = await TreeNode.findOne({ userId: targetUser._id }).lean();
   if (!targetNode) throw new AppError(404, 'Target user has no tree node');
 
-  // authorization: target can be self, parent of self, or descendant of self
   const isSelf = String(targetUser._id) === String(viewer._id);
   let isParentOfViewer = false;
   if (viewerNode.parentUserId) isParentOfViewer = String(targetUser._id) === String(viewerNode.parentUserId);
@@ -383,11 +382,16 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '' } = {}) {
     const descendants = await collectDownlineDescendants(viewer._id);
     isDescendant = descendants.some((d) => String(d.userId) === String(targetUser._id));
   }
-  if (!isSelf && !isParentOfViewer && !isDescendant) {
+
+  if (!asAdmin && !isSelf && !isParentOfViewer && !isDescendant) {
     throw new AppError(403, 'You can only view your own network context');
   }
 
-  const relation = isSelf ? 'self' : isParentOfViewer ? 'parent' : 'descendant';
+  let relation = 'descendant';
+  if (isSelf) relation = 'self';
+  else if (isParentOfViewer) relation = 'parent';
+  else if (isDescendant) relation = 'descendant';
+  else if (asAdmin) relation = 'admin_view';
   const parentNode = targetNode.parentUserId ? await TreeNode.findOne({ userId: targetNode.parentUserId }).lean() : null;
   const directChildNodes = await TreeNode.find({ parentUserId: targetNode.userId }).sort({ createdAt: 1 }).lean();
   const grandChildNodes = directChildNodes.length

@@ -22,6 +22,7 @@ function sanitize(value) {
   if (src.userCode) out.id = String(src.userCode);
   else if (src.publicId) out.id = String(src.publicId);
   else if (src.code && typeof src.code === 'string') out.id = src.code;
+  else if (src._id != null) out.id = String(src._id);
 
   for (const [key, raw] of Object.entries(src)) {
     if (key === '_id' || key === '__v' || key === 'publicId' || key.startsWith('$')) continue;

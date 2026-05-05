@@ -40,10 +40,11 @@ describe('HTTP API (integration)', () => {
     adminToken = a.body.data.token;
   });
 
-  async function registerAndLogin({ name, email, referralCode, community }) {
+  async function registerAndLogin({ name, email, referralCode, community, mobileNumber = '9998887777' }) {
     const reg = await request(app).post('/api/auth/register').send({
       name,
       email,
+      mobileNumber,
       password: userPassword,
       referralCode,
       community,
@@ -221,6 +222,69 @@ describe('HTTP API (integration)', () => {
     expect(w.status).toBe(200);
     expect(w.body.meta).toMatchObject({ page: 1, limit: 10, total: expect.any(Number) });
     expect(Array.isArray(w.body.data)).toBe(true);
+  });
+
+  it('withdrawal POST (after admin credit) → admin approve by publicId or Mongo _id', async () => {
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`);
+    expect(me.status).toBe(200);
+    const userCode = me.body.data.id;
+
+    await request(app)
+      .put('/api/bank-account/me')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({
+        accountHolderName: 'Test Holder',
+        bankName: 'Test Bank',
+        accountNumber: '123456789012',
+        ifscCode: 'HDFC0001234',
+      })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/admin/users/${userCode}/credit`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ amount: 5000, note: 'test credit for withdrawal flow' })
+      .expect(200);
+
+    const wd = await request(app)
+      .post('/api/withdrawals')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({ amount: 1000 })
+      .expect(201);
+
+    const publicId = wd.body.data.id;
+    expect(typeof publicId).toBe('string');
+    expect(publicId.length).toBeGreaterThan(3);
+
+    const approveByPublic = await request(app)
+      .patch(`/api/withdrawals/admin/${encodeURIComponent(publicId)}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved', reason: 'Test payout ok' });
+    expect(approveByPublic.status).toBe(200);
+    expect(approveByPublic.body.data.status).toBe('approved');
+
+    await request(app)
+      .post(`/api/admin/users/${userCode}/credit`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ amount: 2000, note: 'second credit for mongo id review test' })
+      .expect(200);
+
+    const wd2 = await request(app)
+      .post('/api/withdrawals')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({ amount: 500 })
+      .expect(201);
+
+    const { WithdrawalRequest } = require('../src/models');
+    const raw = await WithdrawalRequest.findOne({ publicId: wd2.body.data.id }).lean();
+    expect(raw && raw._id).toBeTruthy();
+
+    const approveByMongo = await request(app)
+      .patch(`/api/withdrawals/admin/${String(raw._id)}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved', reason: 'Test by ObjectId' });
+    expect(approveByMongo.status).toBe(200);
+    expect(approveByMongo.body.data.status).toBe('approved');
   });
 
   it('matching income full flow: first trigger gate, repeated equal events, and real-time payout', async () => {

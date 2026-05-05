@@ -15,4 +15,16 @@ const upload = multer({
   },
 });
 
-module.exports = { upload, MAX_IMAGE_SIZE_BYTES };
+const uploadKyc = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMAGE_SIZE_BYTES, files: 4 },
+  fileFilter: (req, file, cb) => {
+    if (!String(file.mimetype || '').startsWith('image/')) {
+      cb(new AppError(400, 'Only image files are allowed'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+module.exports = { upload, uploadKyc, MAX_IMAGE_SIZE_BYTES };

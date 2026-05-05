@@ -35,6 +35,25 @@ async function uploadPaymentProof(fileBuffer, filename) {
   };
 }
 
+/** @param {string} docKind folder segment under kyc/ */
+async function uploadKycDocument(fileBuffer, filename, docKind) {
+  assertConfigured();
+  const ext = String(filename || 'png').split('.').pop() || 'jpg';
+  const dataUri = `data:image/${ext};base64,${fileBuffer.toString('base64')}`;
+  const safeKind = String(docKind || 'doc').replace(/[^a-z]/gi, '');
+  const result = await cloudinary.uploader.upload(dataUri, {
+    folder: `${env.cloudinaryFolder}/kyc/${safeKind}`,
+    resource_type: 'image',
+    type: 'private',
+    overwrite: false,
+  });
+  return {
+    publicId: result.public_id,
+    resourceType: result.resource_type || 'image',
+    format: result.format || 'jpg',
+  };
+}
+
 function getSignedDownloadUrl({ publicId, resourceType, format }) {
   assertConfigured();
   return cloudinary.utils.private_download_url(publicId, format || 'jpg', {
@@ -47,5 +66,6 @@ function getSignedDownloadUrl({ publicId, resourceType, format }) {
 
 module.exports = {
   uploadPaymentProof,
+  uploadKycDocument,
   getSignedDownloadUrl,
 };

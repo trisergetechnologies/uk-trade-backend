@@ -1,5 +1,6 @@
 const { User, PackageSubscription, SponsorIncomeEvent } = require('../models');
 const { creditWallet } = require('./wallet.service');
+const { recalculateEligibility } = require('./eligibility.service');
 
 async function getMaxActivePackageAmount(userId) {
   const activeSubs = await PackageSubscription.find({ userId, status: 'active' });
@@ -53,6 +54,7 @@ async function creditSponsorOnPurchase({ buyerUserId, packageSubscriptionId, pur
       notes: `Sponsor income from referral purchase`,
       metadata: { gross, cap },
     });
+    await recalculateEligibility(referrer._id.toString());
   }
 
   return { creditedAmount, gross, cap };
