@@ -107,13 +107,25 @@ const adminPatchPackageSchema = z
   });
 
 const adminLookupUserParamSchema = z.object({
-  params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
+  params: z.object({
+    userCode: z
+      .string()
+      .min(3)
+      .max(64)
+      .transform((s) => String(s).trim().toUpperCase()),
+  }),
   body: z.object({}).optional(),
   query: z.object({}).optional(),
 });
 
 const adminCreditWalletSchema = z.object({
-  params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
+  params: z.object({
+    userCode: z
+      .string()
+      .min(3)
+      .max(64)
+      .transform((s) => String(s).trim().toUpperCase()),
+  }),
   body: z.object({
     amount: z.number().positive(),
     note: z.string().max(500).optional(),

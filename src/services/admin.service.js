@@ -189,16 +189,47 @@ async function setAdminUserStatus(userCode, isActive) {
   );
 }
 
-async function lookupUserByCode(userCode) {
-  const code = String(userCode || '').trim().toUpperCase();
-  return User.findOne({ userCode: code }).select('userCode name isActive').lean();
+function mobileLookupVariants(trimmed) {
+  const digits = String(trimmed || '').replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return null;
+  const variants = new Set([trimmed, digits]);
+  if (digits.length === 10) {
+    variants.add(`91${digits}`);
+    variants.add(`+91${digits}`);
+    variants.add(`0${digits}`);
+  }
+  if (digits.length === 11 && digits.startsWith('0')) {
+    variants.add(digits.slice(1));
+  }
+  if (digits.length === 12 && digits.startsWith('91')) {
+    variants.add(digits.slice(2));
+    variants.add(`+${digits}`);
+  }
+  return [...variants].filter(Boolean);
+}
+
+async function findUserByUserCodeOrMobile(rawIdentifier) {
+  const trimmed = String(rawIdentifier || '').trim();
+  if (!trimmed) return null;
+  const byCode = await User.findOne({ userCode: trimmed.toUpperCase() }).select('_id userCode');
+  if (byCode) return byCode;
+
+  const noSpace = trimmed.replace(/\s/g, '');
+  const variants = mobileLookupVariants(noSpace) || mobileLookupVariants(trimmed);
+  if (!variants || !variants.length) return null;
+  return User.findOne({ mobileNumber: { $in: variants } }).select('_id userCode');
+}
+
+async function lookupUserByCode(raw) {
+  const receiver = await findUserByUserCodeOrMobile(raw);
+  if (!receiver) return null;
+  return User.findById(receiver._id).select('userCode name isActive').lean();
 }
 
 async function adminCreditUserWallet({ adminUserId, toUserCode, amount, note = '' }) {
   const admin = await User.findById(adminUserId).select('_id userCode');
   if (!admin) throw new AppError(404, 'Admin not found');
-  const code = String(toUserCode || '').trim().toUpperCase();
-  const receiver = await User.findOne({ userCode: code }).select('_id userCode');
+  const receiver = await findUserByUserCodeOrMobile(toUserCode);
   if (!receiver) throw new AppError(404, 'Recipient not found');
   const amt = Number(amount);
   if (!Number.isFinite(amt) || amt <= 0) throw new AppError(400, 'Invalid amount');
