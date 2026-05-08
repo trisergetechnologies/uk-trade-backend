@@ -10,4 +10,11 @@ function createPublicId(prefix) {
   return `${String(prefix || '').toUpperCase()}${token}`;
 }
 
-module.exports = { createPublicId };
+function createNumericPublicId(length = 5) {
+  const len = Math.max(1, Math.min(12, Number(length) || 5));
+  const max = 10 ** len;
+  const value = crypto.randomInt(0, max);
+  return String(value).padStart(len, '0');
+}
+
+module.exports = { createPublicId, createNumericPublicId };

@@ -15,6 +15,7 @@ const {
   adminPurchaseForUser,
   adminGetUserPassword,
   adminCommunityUsers,
+  adminCommunityTotals,
   adminUserTeamTree,
   adminUserTeamTreeChildren,
   adminUserTeamFocus,
@@ -48,6 +49,7 @@ const router = express.Router();
 
 router.use(authRequired, allowRoles(ROLES.ADMIN));
 router.get('/overview', adminOverview);
+router.get('/community-totals', adminCommunityTotals);
 router.get('/community-users', validate(adminCommunityUsersSchema), adminCommunityUsers);
 router.get('/user-passwords', adminListUsersPasswords);
 router.get('/users', adminListUsers);

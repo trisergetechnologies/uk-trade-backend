@@ -24,13 +24,22 @@ function pickAsset(user, kind) {
   return null;
 }
 
-async function submitMyKyc(userId, fileMap) {
+async function submitMyKyc(userId, fileMap, bankInput = {}) {
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, 'User not found');
 
   const current = user.kyc?.status || 'unverified';
   if (current === 'approved') {
     throw new AppError(400, 'KYC is already approved');
+  }
+
+  const accountHolderName = String(bankInput.accountHolderName || '').trim();
+  const bankName = String(bankInput.bankName || '').trim();
+  const accountNumber = String(bankInput.accountNumber || '').trim();
+  const ifscCode = String(bankInput.ifscCode || '').trim().toUpperCase();
+  const upiId = String(bankInput.upiId || '').trim().toLowerCase();
+  if (!accountHolderName || !bankName || !accountNumber || !ifscCode) {
+    throw new AppError(400, 'Bank account holder, bank name, account number and IFSC are required');
   }
 
   const aadhaarFront = fileMap.aadhaarFront?.[0];
@@ -59,6 +68,14 @@ async function submitMyKyc(userId, fileMap) {
     reviewReason: '',
     reviewedAt: null,
   };
+  user.bankAccount = {
+    accountHolderName,
+    bankName,
+    accountNumber,
+    ifscCode,
+    upiId,
+    updatedAtUtc: new Date(),
+  };
   await user.save();
 
   await AuditLog.create({
@@ -66,7 +83,7 @@ async function submitMyKyc(userId, fileMap) {
     action: 'kyc_submitted',
     targetType: 'User',
     targetId: user._id,
-    details: { status: 'pending' },
+    details: { status: 'pending', bankUpdated: true },
   });
 
   return kycSummary(user);

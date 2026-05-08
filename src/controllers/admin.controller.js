@@ -12,6 +12,7 @@ const {
   lookupUserByCode,
   adminCreditUserWallet,
   listCommunityUsers,
+  getCommunityTotals,
 } = require('../services/admin.service');
 const { purchasePackage } = require('../services/trade.service');
 const { recalculateEligibility } = require('../services/eligibility.service');
@@ -284,6 +285,15 @@ async function adminCommunityUsers(req, res, next) {
   }
 }
 
+async function adminCommunityTotals(req, res, next) {
+  try {
+    const data = await getCommunityTotals();
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function adminUserTeamTree(req, res, next) {
   try {
     const rootCode = req.validated.params.userCode;
@@ -340,6 +350,7 @@ module.exports = {
   adminPurchaseForUser,
   adminGetUserPassword,
   adminCommunityUsers,
+  adminCommunityTotals,
   adminUserTeamTree,
   adminUserTeamTreeChildren,
   adminUserTeamFocus,

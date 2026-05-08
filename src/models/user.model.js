@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { ROLES } = require('../constants/roles');
-const { createPublicId } = require('../utils/public-id');
+const { createNumericPublicId } = require('../utils/public-id');
 
 const userSchema = new mongoose.Schema(
   {
@@ -11,7 +11,7 @@ const userSchema = new mongoose.Schema(
     passwordCipher: { type: String, default: null },
     mobileNumber: { type: String, default: '', trim: true },
     role: { type: String, enum: Object.values(ROLES), default: ROLES.USER },
-    userCode: { type: String, required: true, unique: true, index: true, default: () => createPublicId('USR') },
+    userCode: { type: String, required: true, unique: true, index: true, default: () => createNumericPublicId(5) },
     referralCode: { type: String, required: true, unique: true, index: true },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     preferredCommunity: { type: String, enum: ['left', 'right'], default: 'left' },

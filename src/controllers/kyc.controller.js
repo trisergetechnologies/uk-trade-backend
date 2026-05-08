@@ -6,7 +6,8 @@ const { submitMyKyc, getMyKyc, adminListKyc, adminReviewKyc, pickAsset } = requi
 async function submitKyc(req, res, next) {
   try {
     const fileMap = req.files || {};
-    const data = await submitMyKyc(req.user.sub, fileMap);
+    const bankInput = req.validated?.body || req.body || {};
+    const data = await submitMyKyc(req.user.sub, fileMap, bankInput);
     res.status(201).json({ success: true, data });
   } catch (error) {
     next(error);

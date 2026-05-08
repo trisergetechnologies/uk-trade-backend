@@ -1,4 +1,4 @@
-const { TreeNode, User } = require('../models');
+const { TreeNode, User, PackageSubscription } = require('../models');
 const { AppError } = require('../utils/errors');
 const { metaFor } = require('../utils/pagination');
 const { createPublicId } = require('../utils/public-id');
@@ -104,6 +104,37 @@ async function getMyTree(userId, { page = 1, limit = 50 } = {}) {
   };
 }
 
+function splitDownlineByFirstBranch(rootUserId, descendants) {
+  const byParent = new Map();
+  for (const node of descendants) {
+    const parentKey = String(node.parentUserId || '');
+    if (!byParent.has(parentKey)) byParent.set(parentKey, []);
+    byParent.get(parentKey).push(node);
+  }
+  const rootChildren = byParent.get(String(rootUserId)) || [];
+  const result = { left: [], right: [] };
+  for (const child of rootChildren) {
+    const sideKey = child.side === 'right' ? 'right' : 'left';
+    const stack = [child];
+    while (stack.length) {
+      const current = stack.pop();
+      result[sideKey].push(current);
+      const children = byParent.get(String(current.userId)) || [];
+      for (const c of children) stack.push(c);
+    }
+  }
+  return result;
+}
+
+async function sumPrincipalForUserIds(userIds) {
+  if (!userIds.length) return 0;
+  const rows = await PackageSubscription.aggregate([
+    { $match: { userId: { $in: userIds } } },
+    { $group: { _id: null, total: { $sum: '$principalAmount' } } },
+  ]);
+  return Number(rows[0]?.total || 0);
+}
+
 async function getMyTeamSummary(userId) {
   const me = await TreeNode.findOne({ userId }).lean();
   if (!me) {
@@ -115,6 +146,10 @@ async function getMyTeamSummary(userId) {
       maxLevel: 0,
       leftCommunityMembers: 0,
       rightCommunityMembers: 0,
+      myLeftMembers: 0,
+      myRightMembers: 0,
+      myLeftInvestment: 0,
+      myRightInvestment: 0,
     };
   }
 
@@ -124,6 +159,14 @@ async function getMyTeamSummary(userId) {
   const activeSet = new Set(users.filter((u) => !!u.isActive).map((u) => String(u._id)));
   const directMembers = descendants.filter((n) => String(n.parentUserId) === String(me.userId)).length;
 
+  const branchSplit = splitDownlineByFirstBranch(me.userId, descendants);
+  const leftIds = branchSplit.left.map((n) => n.userId);
+  const rightIds = branchSplit.right.map((n) => n.userId);
+  const [myLeftInvestment, myRightInvestment] = await Promise.all([
+    sumPrincipalForUserIds(leftIds),
+    sumPrincipalForUserIds(rightIds),
+  ]);
+
   return {
     totalMembers: descendants.length,
     directMembers,
@@ -132,6 +175,10 @@ async function getMyTeamSummary(userId) {
     maxLevel: descendants.reduce((mx, d) => Math.max(mx, Number(d.level || 0)), 0),
     leftCommunityMembers: descendants.filter((d) => d.community === 'left').length,
     rightCommunityMembers: descendants.filter((d) => d.community === 'right').length,
+    myLeftMembers: leftIds.length,
+    myRightMembers: rightIds.length,
+    myLeftInvestment,
+    myRightInvestment,
   };
 }
 

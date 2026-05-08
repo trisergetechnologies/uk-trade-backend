@@ -263,6 +263,35 @@ async function adminCreditUserWallet({ adminUserId, toUserCode, amount, note = '
   return transfer;
 }
 
+async function getCommunityTotals() {
+  const nodes = await TreeNode.find({}).select('userId community').lean();
+  const leftIds = [];
+  const rightIds = [];
+  for (const node of nodes) {
+    if (node.community === 'left') leftIds.push(node.userId);
+    else if (node.community === 'right') rightIds.push(node.userId);
+  }
+
+  async function sumPrincipal(userIds) {
+    if (!userIds.length) return 0;
+    const rows = await PackageSubscription.aggregate([
+      { $match: { userId: { $in: userIds } } },
+      { $group: { _id: null, total: { $sum: '$principalAmount' } } },
+    ]);
+    return Number(rows[0]?.total || 0);
+  }
+
+  const [leftInvestment, rightInvestment] = await Promise.all([
+    sumPrincipal(leftIds),
+    sumPrincipal(rightIds),
+  ]);
+
+  return {
+    left: { users: leftIds.length, investment: leftInvestment },
+    right: { users: rightIds.length, investment: rightInvestment },
+  };
+}
+
 async function listCommunityUsers({ community, page, limit, q }) {
   if (community !== 'left' && community !== 'right') {
     throw new AppError(400, 'community must be left or right');
@@ -337,5 +366,6 @@ module.exports = {
   lookupUserByCode,
   adminCreditUserWallet,
   listCommunityUsers,
+  getCommunityTotals,
   listAuditLogs,
 };

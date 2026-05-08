@@ -6,27 +6,22 @@ const { env } = require('../config/env');
 const { ROLES } = require('../constants/roles');
 const { AppError } = require('../utils/errors');
 const { encryptPassword } = require('../utils/password-cipher');
+const { createNumericPublicId } = require('../utils/public-id');
 
-function randomReferralCode() {
-  return `UT${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-}
-
-function randomUserCode() {
-  return `USR${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-}
+const NUMERIC_CODE_LENGTH = 5;
 
 async function generateUniqueReferralCode() {
-  let code = randomReferralCode();
+  let code = createNumericPublicId(NUMERIC_CODE_LENGTH);
   while (await User.findOne({ referralCode: code })) {
-    code = randomReferralCode();
+    code = createNumericPublicId(NUMERIC_CODE_LENGTH);
   }
   return code;
 }
 
 async function generateUniqueUserCode() {
-  let code = randomUserCode();
+  let code = createNumericPublicId(NUMERIC_CODE_LENGTH);
   while (await User.findOne({ userCode: code })) {
-    code = randomUserCode();
+    code = createNumericPublicId(NUMERIC_CODE_LENGTH);
   }
   return code;
 }
@@ -39,7 +34,8 @@ async function registerUser(input) {
   const existing = await User.findOne({ email: input.email.toLowerCase() });
   if (existing) throw new AppError(409, 'Email already exists');
 
-  const referredByUser = await User.findOne({ referralCode: input.referralCode });
+  const normalizedReferral = String(input.referralCode || '').trim().toUpperCase();
+  const referredByUser = await User.findOne({ referralCode: normalizedReferral });
   if (!referredByUser) throw new AppError(400, 'Invalid referral code');
 
   const passwordHash = await bcrypt.hash(input.password, 10);
