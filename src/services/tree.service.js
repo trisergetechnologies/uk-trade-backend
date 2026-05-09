@@ -182,7 +182,7 @@ async function getMyTeamSummary(userId) {
   };
 }
 
-async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q = '', level } = {}) {
+async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q = '', level, community } = {}) {
   const me = await TreeNode.findOne({ userId }).lean();
   if (!me) return { data: [], total: 0 };
 
@@ -232,6 +232,15 @@ async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q 
   }
   if (typeof level === 'number' && Number.isFinite(level) && level >= 1) {
     rows = rows.filter((r) => Number(r.level) === level);
+  }
+  // Match dashboard "left / right community" counts (myLeftMembers / myRightMembers):
+  // split by binary-tree branch from this user, not by each member's registration `community` field.
+  if (community === 'left' || community === 'right') {
+    const branchSplit = splitDownlineByFirstBranch(me.userId, nodes);
+    const inBranch = new Set(
+      (community === 'left' ? branchSplit.left : branchSplit.right).map((n) => String(n.userId))
+    );
+    rows = rows.filter((r) => inBranch.has(String(r.userId)));
   }
 
   rows.sort((a, b) => new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime());

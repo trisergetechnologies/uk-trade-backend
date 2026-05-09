@@ -51,8 +51,10 @@ async function myTeamMembers(req, res, next) {
     const q = String(req.query.q || '').trim();
     const levelRaw = String(req.query.level || '').trim();
     const level = levelRaw ? Number.parseInt(levelRaw, 10) : undefined;
+    const communityRaw = String(req.query.community || '').trim().toLowerCase();
+    const community = communityRaw === 'left' || communityRaw === 'right' ? communityRaw : undefined;
 
-    const { data, total } = await getMyTeamMembers(req.user.sub, { page, limit, type, q, level });
+    const { data, total } = await getMyTeamMembers(req.user.sub, { page, limit, type, q, level, community });
     res.json({ success: true, data, meta: metaFor(page, limit, total) });
   } catch (error) {
     next(error);
