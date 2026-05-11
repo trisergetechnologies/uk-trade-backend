@@ -106,7 +106,7 @@ async function getAdminOverview(days = 14) {
   };
 }
 
-async function listAdminUsers({ page, limit, q, role, isActive }) {
+async function listAdminUsers({ page, limit, q, role, isActive, hasPurchasedPackage }) {
   const filter = {};
   if (role) filter.role = role;
   if (typeof isActive === 'boolean') filter.isActive = isActive;
@@ -116,11 +116,99 @@ async function listAdminUsers({ page, limit, q, role, isActive }) {
     filter.$or = [{ name: rx }, { email: rx }, { userCode: rx }];
   }
   const skip = (page - 1) * limit;
-  const [rows, total] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email role isActive userCode createdAt updatedAt'),
-    User.countDocuments(filter),
-  ]);
-  return { rows, total };
+  const subColl = PackageSubscription.collection.collectionName;
+  const planColl = Plan.collection.collectionName;
+
+  const baseStages = [
+    { $match: filter },
+    {
+      $lookup: {
+        from: subColl,
+        let: { uid: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$userId', '$$uid'] } } },
+          { $lookup: { from: planColl, localField: 'planId', foreignField: '_id', as: '_planArr' } },
+          { $addFields: { _plan: { $arrayElemAt: ['$_planArr', 0] } } },
+          {
+            $project: {
+              publicId: 1,
+              principalAmount: 1,
+              status: 1,
+              planCode: '$_plan.code',
+              planName: '$_plan.name',
+            },
+          },
+        ],
+        as: 'packageSubs',
+      },
+    },
+    {
+      $addFields: {
+        hasPurchasedPackage: { $gt: [{ $size: '$packageSubs' }, 0] },
+        activePackages: {
+          $filter: {
+            input: '$packageSubs',
+            as: 'p',
+            cond: { $eq: ['$$p.status', 'active'] },
+          },
+        },
+      },
+    },
+  ];
+
+  if (typeof hasPurchasedPackage === 'boolean') {
+    baseStages.push({ $match: { hasPurchasedPackage } });
+  }
+
+  const countPipeline = [...baseStages, { $count: 'total' }];
+  const dataPipeline = [
+    ...baseStages,
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $project: {
+        _id: 1,
+        name: 1,
+        email: 1,
+        role: 1,
+        isActive: 1,
+        userCode: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        hasPurchasedPackage: 1,
+        activePackages: {
+          $map: {
+            input: '$activePackages',
+            as: 'p',
+            in: {
+              publicId: '$$p.publicId',
+              amount: '$$p.principalAmount',
+              planCode: '$$p.planCode',
+              planName: '$$p.planName',
+              status: '$$p.status',
+            },
+          },
+        },
+      },
+    },
+  ];
+
+  const [countAgg, rows] = await Promise.all([User.aggregate(countPipeline), User.aggregate(dataPipeline)]);
+  const total = countAgg[0]?.total || 0;
+  const mapped = rows.map((r) => ({
+    id: String(r._id),
+    userCode: r.userCode,
+    name: r.name,
+    email: r.email,
+    role: r.role,
+    isActive: r.isActive,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    hasPurchasedPackage: !!r.hasPurchasedPackage,
+    activePackages: Array.isArray(r.activePackages) ? r.activePackages : [],
+  }));
+  return { rows: mapped, total };
 }
 
 async function listAdminUsersWithPasswords({ page, limit, q, role, isActive }) {

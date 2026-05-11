@@ -39,7 +39,9 @@ async function adminListUsers(req, res, next) {
     const role = String(req.query.role || '').trim() || undefined;
     const isActiveRaw = String(req.query.isActive || '').trim().toLowerCase();
     const isActive = isActiveRaw === '' ? undefined : isActiveRaw === 'true';
-    const { rows, total } = await listAdminUsers({ page, limit, q, role, isActive });
+    const hasPkgRaw = String(req.query.hasPurchasedPackage || '').trim().toLowerCase();
+    const hasPurchasedPackage = hasPkgRaw === '' ? undefined : hasPkgRaw === 'true';
+    const { rows, total } = await listAdminUsers({ page, limit, q, role, isActive, hasPurchasedPackage });
     res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
   } catch (error) {
     next(error);
