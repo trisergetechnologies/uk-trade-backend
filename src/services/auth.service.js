@@ -120,8 +120,7 @@ async function bootstrapAdmin() {
     preferredCommunity: 'left',
   });
   await Wallet.create({ userId: created._id, balance: 0, eligibleToWithdraw: 0 });
-  await placeUserInTree(created._id, 'left');
-  await User.updateOne({ _id: created._id }, { $set: { treePlacedAt: new Date() } });
+  /* Admin is not placed in the binary tree (operator-only account; same login). */
 }
 
 /** Idempotent: creates the default main user under the seeded admin if missing. */

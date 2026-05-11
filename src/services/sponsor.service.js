@@ -1,6 +1,7 @@
 const { User, PackageSubscription, SponsorIncomeEvent } = require('../models');
 const { creditWallet } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
+const { isNetworkParticipant } = require('../utils/network-participant');
 
 async function getMaxActivePackageAmount(userId) {
   const activeSubs = await PackageSubscription.find({ userId, status: 'active' });
@@ -14,6 +15,19 @@ async function creditSponsorOnPurchase({ buyerUserId, packageSubscriptionId, pur
 
   const referrer = await User.findById(buyer.referredBy);
   if (!referrer) return { creditedAmount: 0, reason: 'referrer-missing' };
+
+  if (!isNetworkParticipant(referrer)) {
+    await SponsorIncomeEvent.create({
+      buyerUserId,
+      referrerUserId: referrer._id,
+      packageSubscriptionId,
+      grossAmount: 0,
+      creditedAmount: 0,
+      capAmount: 0,
+      notes: 'Referrer is not a network participant (e.g. system admin)',
+    });
+    return { creditedAmount: 0, reason: 'referrer-not-network-participant' };
+  }
 
   const cap = await getMaxActivePackageAmount(referrer._id);
   if (cap <= 0) {

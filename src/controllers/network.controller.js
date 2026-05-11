@@ -1,4 +1,5 @@
 const { User, TreeNode } = require('../models');
+const { ROLES } = require('../constants/roles');
 const {
   getMyTree,
   placeUserInTree,
@@ -23,6 +24,10 @@ async function myTree(req, res, next) {
 async function placeSelf(req, res, next) {
   try {
     const user = await User.findById(req.user.sub);
+    if (user?.role === ROLES.ADMIN) {
+      const node = await TreeNode.findOne({ userId: req.user.sub });
+      return res.json({ success: true, data: node });
+    }
     if (user?.treePlacedAt) {
       const node = await TreeNode.findOne({ userId: req.user.sub });
       return res.json({ success: true, data: node });

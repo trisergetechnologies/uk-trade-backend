@@ -1,5 +1,6 @@
 const { env } = require('../config/env');
 const { MatchingIncomeEvent, PackageSubscription, TreeNode, User } = require('../models');
+const { isNetworkParticipant } = require('../utils/network-participant');
 const { creditWallet } = require('./wallet.service');
 const { getMaxActivePackageAmount } = require('./sponsor.service');
 const { collectDownlineDescendants } = require('./tree.service');
@@ -201,8 +202,14 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
   while (cursorParentUserId && hops <= MAX_MATCHING_LEVEL) {
     const earnerNode = await TreeNode.findOne({ userId: cursorParentUserId }).lean();
     if (!earnerNode) break;
-    const earnerUser = await User.findById(cursorParentUserId).select('_id firstMatchingDone').lean();
+    const earnerUser = await User.findById(cursorParentUserId).select('_id firstMatchingDone role').lean();
     if (!earnerUser) break;
+
+    if (!isNetworkParticipant(earnerUser)) {
+      cursorParentUserId = earnerNode.parentUserId;
+      hops += 1;
+      continue;
+    }
 
     const snapshot = await getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId);
     if (snapshot) {

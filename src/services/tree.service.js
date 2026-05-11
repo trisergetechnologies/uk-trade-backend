@@ -2,6 +2,10 @@ const { TreeNode, User, PackageSubscription } = require('../models');
 const { AppError } = require('../utils/errors');
 const { metaFor } = require('../utils/pagination');
 const { createPublicId } = require('../utils/public-id');
+const { isNetworkParticipant } = require('../utils/network-participant');
+
+/** Single global binary tree bucket (prevents parallel roots when signup picks different communities). */
+const PLACEMENT_COMMUNITY = 'left';
 
 async function findPlacementParent(community) {
   const queue = await TreeNode.find({ community }).sort({ level: 1, createdAt: 1 });
@@ -12,15 +16,27 @@ async function findPlacementParent(community) {
   return null;
 }
 
-async function placeUserInTree(userId, community) {
+async function placeUserInTree(userId, _signupCommunityIgnored) {
+  const actor = await User.findById(userId).select('role').lean();
+  if (!actor || !isNetworkParticipant(actor)) {
+    return TreeNode.findOne({ userId });
+  }
+
   const existing = await TreeNode.findOne({ userId });
   if (existing && existing.parentUserId) return existing;
 
-  const parentNode = await findPlacementParent(community);
+  const placementCommunity = PLACEMENT_COMMUNITY;
+  const parentNode = await findPlacementParent(placementCommunity);
   if (!parentNode) {
     return TreeNode.findOneAndUpdate(
       { userId },
-      { userId, parentUserId: null, side: community, community, level: 0 },
+      {
+        userId,
+        parentUserId: null,
+        side: placementCommunity,
+        community: placementCommunity,
+        level: 0,
+      },
       { upsert: true, returnDocument: 'after' }
     );
   }
@@ -34,7 +50,7 @@ async function placeUserInTree(userId, community) {
       userId,
       parentUserId: parentNode.userId,
       side,
-      community,
+      community: placementCommunity,
       level: parentNode.level + 1,
     },
     { upsert: true, returnDocument: 'after' }
@@ -508,6 +524,7 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = fal
 
 module.exports = {
   placeUserInTree,
+  PLACEMENT_COMMUNITY,
   getMyTree,
   collectDownlineDescendants,
   getMyTeamSummary,
