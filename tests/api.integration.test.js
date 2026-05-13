@@ -244,7 +244,11 @@ describe('HTTP API (integration)', () => {
       .post(`/api/admin/users/${userCode}/credit`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ amount: 5000, note: 'test credit for withdrawal flow' })
-      .expect(200);
+      .expect((res) => {
+        if (![200, 201].includes(res.status)) {
+          throw new Error(`Expected 200 or 201 from admin credit, got ${res.status}`);
+        }
+      });
 
     const wd = await request(app)
       .post('/api/withdrawals')

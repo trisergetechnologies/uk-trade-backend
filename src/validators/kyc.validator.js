@@ -14,8 +14,17 @@ const submitKycSchema = z.object({
   query: z.object({}).optional(),
 });
 
+const kycDocumentKindEnum = z.enum([
+  'aadhaar',
+  'passbook',
+  'aadhaarFront',
+  'aadhaarBack',
+  'pan',
+  'photo',
+]);
+
 const myKycDocumentSchema = z.object({
-  params: z.object({ kind: z.enum(['aadhaarFront', 'aadhaarBack', 'pan', 'photo']) }),
+  params: z.object({ kind: kycDocumentKindEnum }),
   body: z.object({}).optional(),
   query: z.object({}).optional(),
 });
@@ -45,7 +54,7 @@ const adminReviewKycSchema = z.object({
 const adminKycMediaSchema = z.object({
   params: z.object({
     userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
-    kind: z.enum(['aadhaarFront', 'aadhaarBack', 'pan', 'photo']),
+    kind: kycDocumentKindEnum,
   }),
   body: z.object({}).optional(),
   query: z.object({}).optional(),

@@ -1,60 +1,21 @@
 const { TreeNode, User, PackageSubscription } = require('../models');
+const { ROLES } = require('../constants/roles');
+const { env } = require('../config/env');
 const { AppError } = require('../utils/errors');
 const { metaFor } = require('../utils/pagination');
 const { createPublicId } = require('../utils/public-id');
 const { isNetworkParticipant } = require('../utils/network-participant');
 
-/** Single global binary tree bucket (prevents parallel roots when signup picks different communities). */
-const PLACEMENT_COMMUNITY = 'left';
-
-async function findPlacementParent(community) {
-  const queue = await TreeNode.find({ community }).sort({ level: 1, createdAt: 1 });
-  for (const node of queue) {
-    const children = await TreeNode.countDocuments({ parentUserId: node.userId });
-    if (children < 2) return node;
-  }
-  return null;
+/** Left vs right **team** under Main User root (`SEED_USER_EMAIL`), from signup `preferredCommunity`. */
+function normalizeSignupBranch(signupCommunity) {
+  return signupCommunity === 'right' ? 'right' : 'left';
 }
 
-async function placeUserInTree(userId, _signupCommunityIgnored) {
-  const actor = await User.findById(userId).select('role').lean();
-  if (!actor || !isNetworkParticipant(actor)) {
-    return TreeNode.findOne({ userId });
-  }
-
-  const existing = await TreeNode.findOne({ userId });
-  if (existing && existing.parentUserId) return existing;
-
-  const placementCommunity = PLACEMENT_COMMUNITY;
-  const parentNode = await findPlacementParent(placementCommunity);
-  if (!parentNode) {
-    return TreeNode.findOneAndUpdate(
-      { userId },
-      {
-        userId,
-        parentUserId: null,
-        side: placementCommunity,
-        community: placementCommunity,
-        level: 0,
-      },
-      { upsert: true, returnDocument: 'after' }
-    );
-  }
-
-  const leftTaken = await TreeNode.findOne({ parentUserId: parentNode.userId, side: 'left' });
-  const side = leftTaken ? 'right' : 'left';
-
-  return TreeNode.findOneAndUpdate(
-    { userId },
-    {
-      userId,
-      parentUserId: parentNode.userId,
-      side,
-      community: placementCommunity,
-      level: parentNode.level + 1,
-    },
-    { upsert: true, returnDocument: 'after' }
-  );
+async function getMainUserId() {
+  const u = await User.findOne({ email: env.seedUserEmail.toLowerCase(), role: ROLES.USER })
+    .select('_id')
+    .lean();
+  return u?._id || null;
 }
 
 async function collectDownlineDescendants(rootUserId) {
@@ -77,6 +38,107 @@ async function collectDownlineDescendants(rootUserId) {
     frontier = next;
   }
   return results;
+}
+
+async function collectSubtreeIncludingRoot(rootUserId) {
+  const root = await TreeNode.findOne({ userId: rootUserId }).lean();
+  if (!root) return [];
+  const below = await collectDownlineDescendants(rootUserId);
+  return [root, ...below];
+}
+
+/**
+ * Next parent inside Main User's left or right branch only (level then createdAt within that subtree).
+ * If Main has no direct child on that side yet, caller attaches as Main's child on that side.
+ */
+async function findPlacementParentInBranch(mainUserId, branch) {
+  const mainNode = await TreeNode.findOne({ userId: mainUserId }).lean();
+  if (!mainNode) return null;
+
+  const legRoot = await TreeNode.findOne({ parentUserId: mainNode.userId, side: branch }).lean();
+  if (!legRoot) {
+    return { type: 'under_main', mainNode };
+  }
+
+  const subtree = await collectSubtreeIncludingRoot(legRoot.userId);
+  subtree.sort((a, b) => {
+    if (Number(a.level || 0) !== Number(b.level || 0)) return Number(a.level || 0) - Number(b.level || 0);
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+
+  for (const node of subtree) {
+    const children = await TreeNode.countDocuments({ parentUserId: node.userId });
+    if (children < 2) return { type: 'under_node', parentNode: node };
+  }
+  return null;
+}
+
+async function placeUserInTree(userId, signupCommunityInput) {
+  const actor = await User.findById(userId).select('role').lean();
+  if (!actor || !isNetworkParticipant(actor)) {
+    return TreeNode.findOne({ userId });
+  }
+
+  const existing = await TreeNode.findOne({ userId });
+  if (existing && existing.parentUserId) return existing;
+
+  const branch = normalizeSignupBranch(signupCommunityInput);
+  const mainUserId = await getMainUserId();
+  if (!mainUserId) {
+    throw new AppError(500, 'Main user (SEED_USER_EMAIL) not configured or missing');
+  }
+
+  if (String(userId) === String(mainUserId)) {
+    const pref = await User.findById(userId).select('preferredCommunity').lean();
+    const rootCommunity = normalizeSignupBranch(pref?.preferredCommunity);
+    return TreeNode.findOneAndUpdate(
+      { userId },
+      {
+        userId,
+        parentUserId: null,
+        side: 'left',
+        community: rootCommunity,
+        level: 0,
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+  }
+
+  const placement = await findPlacementParentInBranch(mainUserId, branch);
+  if (!placement) {
+    throw new AppError(500, 'Tree placement failed: main user tree node missing');
+  }
+
+  if (placement.type === 'under_main') {
+    const { mainNode } = placement;
+    return TreeNode.findOneAndUpdate(
+      { userId },
+      {
+        userId,
+        parentUserId: mainNode.userId,
+        side: branch,
+        community: branch,
+        level: Number(mainNode.level || 0) + 1,
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+  }
+
+  const { parentNode } = placement;
+  const leftTaken = await TreeNode.findOne({ parentUserId: parentNode.userId, side: 'left' });
+  const side = leftTaken ? 'right' : 'left';
+
+  return TreeNode.findOneAndUpdate(
+    { userId },
+    {
+      userId,
+      parentUserId: parentNode.userId,
+      side,
+      community: branch,
+      level: Number(parentNode.level || 0) + 1,
+    },
+    { upsert: true, returnDocument: 'after' }
+  );
 }
 
 async function ensureUserCodeForUser(userId) {
@@ -522,11 +584,31 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = fal
   return { parent, focus, children, grandchildrenByParent, relation };
 }
 
+/**
+ * Binary branch under Main User: walk up until parent is Main; child's `side` is left vs right leg from root.
+ * Returns null for Main User root node; null also if chain breaks (orphan).
+ */
+function computeBranchUnderMainFromNode(node, mainUserId, nodeByUserId) {
+  if (!node || String(node.userId) === String(mainUserId)) return null;
+  let cur = node;
+  while (cur && cur.parentUserId) {
+    if (String(cur.parentUserId) === String(mainUserId)) {
+      return cur.side === 'right' ? 'right' : 'left';
+    }
+    cur = nodeByUserId.get(String(cur.parentUserId));
+    if (!cur) return null;
+  }
+  return null;
+}
+
 module.exports = {
   placeUserInTree,
-  PLACEMENT_COMMUNITY,
+  getMainUserId,
+  normalizeSignupBranch,
+  computeBranchUnderMainFromNode,
   getMyTree,
   collectDownlineDescendants,
+  collectSubtreeIncludingRoot,
   getMyTeamSummary,
   getMyTeamMembers,
   getMyTeamTree,

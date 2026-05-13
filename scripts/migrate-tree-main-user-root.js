@@ -12,6 +12,9 @@
  *   Stop the API (or run during maintenance) so no signups/placements run mid-migration.
  *   Take a full MongoDB backup first.
  *
+ * Replay uses each user's `preferredCommunity` (left/right at signup) so left vs right subtrees
+ * under Main User match historical signup intent.
+ *
  * Run from uk-trade-backend:
  *   PROD_PROTECT=false MIGRATE_TREE_CONFIRM=YES_I_HAVE_A_DATABASE_BACKUP node scripts/migrate-tree-main-user-root.js
  */
@@ -52,15 +55,19 @@ async function main() {
   }
 
   const mainIdStr = String(mainUser._id);
-  const rest = orderedIds.filter((id) => String(id) !== mainIdStr);
-  const replayOrder = [mainUser._id, ...rest];
+  const restIds = orderedIds.filter((id) => String(id) !== mainIdStr);
+  const restUsers = await User.find({ _id: { $in: restIds } }).select('createdAt').lean();
+  const createdMap = new Map(restUsers.map((x) => [String(x._id), x.createdAt]));
+  restIds.sort((a, b) => new Date(createdMap.get(String(a)) || 0) - new Date(createdMap.get(String(b)) || 0));
+  const replayOrder = [mainUser._id, ...restIds];
 
   await TreeNode.deleteMany({});
 
   for (const uid of replayOrder) {
-    const u = await User.findById(uid).select('role').lean();
+    const u = await User.findById(uid).select('role preferredCommunity').lean();
     if (!u || u.role !== ROLES.USER) continue;
-    await placeUserInTree(uid, 'left');
+    const branch = u.preferredCommunity === 'right' ? 'right' : 'left';
+    await placeUserInTree(uid, branch);
   }
 
   const newCount = await TreeNode.countDocuments({});

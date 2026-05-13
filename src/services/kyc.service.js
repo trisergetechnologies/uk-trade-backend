@@ -3,7 +3,22 @@ const { AppError } = require('../utils/errors');
 const { uploadKycDocument } = require('./cloudinary.service');
 const { parsePagination, metaFor } = require('../utils/pagination');
 
-const KYC_KINDS = ['aadhaarFront', 'aadhaarBack', 'pan', 'photo'];
+/** URL param values for GET document routes (includes legacy submissions). */
+const KYC_KINDS = ['aadhaar', 'passbook', 'aadhaarFront', 'aadhaarBack', 'pan', 'photo'];
+
+function kycDocumentKindsFromKyc(k) {
+  if (!k) return [];
+  const kinds = [];
+  if (k.aadhaarAsset?.publicId) kinds.push('aadhaar');
+  else {
+    if (k.aadhaarFrontAsset?.publicId) kinds.push('aadhaarFront');
+    if (k.aadhaarBackAsset?.publicId) kinds.push('aadhaarBack');
+  }
+  if (k.passbookAsset?.publicId) kinds.push('passbook');
+  if (k.panAsset?.publicId) kinds.push('pan');
+  if (k.photoAsset?.publicId) kinds.push('photo');
+  return kinds;
+}
 
 function kycSummary(user) {
   const k = user.kyc || {};
@@ -12,11 +27,14 @@ function kycSummary(user) {
     submittedAt: k.submittedAt || null,
     reviewedAt: k.reviewedAt || null,
     reviewReason: k.reviewReason || '',
+    documents: kycDocumentKindsFromKyc(k),
   };
 }
 
 function pickAsset(user, kind) {
   const k = user.kyc || {};
+  if (kind === 'aadhaar') return k.aadhaarAsset;
+  if (kind === 'passbook') return k.passbookAsset;
   if (kind === 'aadhaarFront') return k.aadhaarFrontAsset;
   if (kind === 'aadhaarBack') return k.aadhaarBackAsset;
   if (kind === 'pan') return k.panAsset;
@@ -42,27 +60,21 @@ async function submitMyKyc(userId, fileMap, bankInput = {}) {
     throw new AppError(400, 'Bank account holder, bank name, account number and IFSC are required');
   }
 
-  const aadhaarFront = fileMap.aadhaarFront?.[0];
-  const aadhaarBack = fileMap.aadhaarBack?.[0];
-  const pan = fileMap.pan?.[0];
-  const photo = fileMap.photo?.[0];
-  if (!aadhaarFront?.buffer || !aadhaarBack?.buffer || !pan?.buffer || !photo?.buffer) {
-    throw new AppError(400, 'Aadhaar front, Aadhaar back, PAN, and photo images are required');
+  const aadhaar = fileMap.aadhaar?.[0];
+  const passbook = fileMap.passbook?.[0];
+  if (!aadhaar?.buffer || !passbook?.buffer) {
+    throw new AppError(400, 'Aadhaar image and passbook or cheque book image are required');
   }
 
-  const [aadhaarFrontAsset, aadhaarBackAsset, panAsset, photoAsset] = await Promise.all([
-    uploadKycDocument(aadhaarFront.buffer, aadhaarFront.originalname, 'aadhaar-front'),
-    uploadKycDocument(aadhaarBack.buffer, aadhaarBack.originalname, 'aadhaar-back'),
-    uploadKycDocument(pan.buffer, pan.originalname, 'pan'),
-    uploadKycDocument(photo.buffer, photo.originalname, 'photo'),
+  const [aadhaarAsset, passbookAsset] = await Promise.all([
+    uploadKycDocument(aadhaar.buffer, aadhaar.originalname, 'aadhaar'),
+    uploadKycDocument(passbook.buffer, passbook.originalname, 'passbook'),
   ]);
 
   user.kyc = {
     status: 'pending',
-    aadhaarFrontAsset,
-    aadhaarBackAsset,
-    panAsset,
-    photoAsset,
+    aadhaarAsset,
+    passbookAsset,
     submittedAt: new Date(),
     reviewedBy: null,
     reviewReason: '',
@@ -174,7 +186,7 @@ function assertKycApproved(user) {
   if (st !== 'approved') {
     throw new AppError(
       400,
-      'Complete KYC (Aadhaar front & back, PAN, photo) and wait for admin approval before withdrawing'
+      'Complete KYC (Aadhaar and passbook or cheque book upload) and wait for admin approval before withdrawing'
     );
   }
 }

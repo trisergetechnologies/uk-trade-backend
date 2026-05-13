@@ -14,6 +14,7 @@
         "seed:holidays": "node scripts/seed-holidays.js",
         "seed:network": "node scripts/seed-large-network.js",
         "migrate:tree-main-root": "node scripts/migrate-tree-main-user-root.js",
+        "analyze:tree-vs-signup": "node scripts/analyze-tree-vs-signup.js",
         "lint": "eslint ."
     },
     "repository": {

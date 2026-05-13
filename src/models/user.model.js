@@ -33,6 +33,16 @@ const userSchema = new mongoose.Schema(
         default: 'unverified',
         index: true,
       },
+      aadhaarAsset: {
+        publicId: { type: String, default: '' },
+        resourceType: { type: String, default: 'image' },
+        format: { type: String, default: 'jpg' },
+      },
+      passbookAsset: {
+        publicId: { type: String, default: '' },
+        resourceType: { type: String, default: 'image' },
+        format: { type: String, default: 'jpg' },
+      },
       aadhaarFrontAsset: {
         publicId: { type: String, default: '' },
         resourceType: { type: String, default: 'image' },

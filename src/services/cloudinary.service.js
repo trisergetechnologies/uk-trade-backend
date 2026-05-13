@@ -41,17 +41,29 @@ async function uploadKycDocument(fileBuffer, filename, docKind) {
   const ext = String(filename || 'png').split('.').pop() || 'jpg';
   const dataUri = `data:image/${ext};base64,${fileBuffer.toString('base64')}`;
   const safeKind = String(docKind || 'doc').replace(/[^a-z]/gi, '');
-  const result = await cloudinary.uploader.upload(dataUri, {
-    folder: `${env.cloudinaryFolder}/kyc/${safeKind}`,
-    resource_type: 'image',
-    type: 'private',
-    overwrite: false,
-  });
-  return {
-    publicId: result.public_id,
-    resourceType: result.resource_type || 'image',
-    format: result.format || 'jpg',
-  };
+  try {
+    const result = await cloudinary.uploader.upload(dataUri, {
+      folder: `${env.cloudinaryFolder}/kyc/${safeKind}`,
+      resource_type: 'image',
+      type: 'private',
+      overwrite: false,
+    });
+    return {
+      publicId: result.public_id,
+      resourceType: result.resource_type || 'image',
+      format: result.format || 'jpg',
+    };
+  } catch (err) {
+    const http = err && typeof err.http_code === 'number' ? err.http_code : null;
+    const raw = err && err.message ? String(err.message) : String(err);
+    const short = raw.length > 180 ? `${raw.slice(0, 180)}…` : raw;
+    throw new AppError(
+      502,
+      http
+        ? `Could not upload image to storage (HTTP ${http}). Try a smaller file or JPG/PNG.`
+        : `Could not upload image: ${short}`
+    );
+  }
 }
 
 function getSignedDownloadUrl({ publicId, resourceType, format }) {

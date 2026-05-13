@@ -32,7 +32,12 @@ async function myKycDocument(req, res, next) {
     if (!asset?.publicId) throw new AppError(404, 'Document not found');
     const signedUrl = getSignedDownloadUrl(asset);
     const upstream = await fetch(signedUrl);
-    if (!upstream.ok) throw new AppError(502, 'Unable to fetch document');
+    if (!upstream.ok) {
+      throw new AppError(
+        502,
+        `Document could not be loaded from storage (upstream HTTP ${upstream.status}). Try again in a moment.`
+      );
+    }
     const contentType = upstream.headers.get('content-type') || 'image/jpeg';
     const arrayBuffer = await upstream.arrayBuffer();
     res.setHeader('Content-Type', contentType);
@@ -72,7 +77,12 @@ async function adminKycDocument(req, res, next) {
     if (!asset?.publicId) throw new AppError(404, 'Document not found');
     const signedUrl = getSignedDownloadUrl(asset);
     const upstream = await fetch(signedUrl);
-    if (!upstream.ok) throw new AppError(502, 'Unable to fetch document');
+    if (!upstream.ok) {
+      throw new AppError(
+        502,
+        `Document could not be loaded from storage (upstream HTTP ${upstream.status}). Try again in a moment.`
+      );
+    }
     const contentType = upstream.headers.get('content-type') || 'image/jpeg';
     const arrayBuffer = await upstream.arrayBuffer();
     res.setHeader('Content-Type', contentType);

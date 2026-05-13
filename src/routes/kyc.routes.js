@@ -8,10 +8,8 @@ const { submitKycSchema, myKycDocumentSchema } = require('../validators/kyc.vali
 const router = express.Router();
 
 const kycFields = uploadKyc.fields([
-  { name: 'aadhaarFront', maxCount: 1 },
-  { name: 'aadhaarBack', maxCount: 1 },
-  { name: 'pan', maxCount: 1 },
-  { name: 'photo', maxCount: 1 },
+  { name: 'aadhaar', maxCount: 1 },
+  { name: 'passbook', maxCount: 1 },
 ]);
 
 router.get('/me', authRequired, myKyc);

@@ -17,7 +17,7 @@ const upload = multer({
 
 const uploadKyc = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_IMAGE_SIZE_BYTES, files: 4 },
+  limits: { fileSize: MAX_IMAGE_SIZE_BYTES, files: 2 },
   fileFilter: (req, file, cb) => {
     if (!String(file.mimetype || '').startsWith('image/')) {
       cb(new AppError(400, 'Only image files are allowed'));
