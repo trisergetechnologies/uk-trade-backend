@@ -1,4 +1,9 @@
-const { buildIdempotencyKey, calculateMatchingPayout, splitByFirstBranch } = require('../src/services/matching.service');
+const {
+  buildIdempotencyKey,
+  calculateMatchingPayout,
+  splitByFirstBranch,
+  isSubscriptionActiveAsOf,
+} = require('../src/services/matching.service');
 
 describe('matching.engine (unit)', () => {
   test('buildIdempotencyKey is stable per trigger+earner pair', () => {
@@ -16,6 +21,42 @@ describe('matching.engine (unit)', () => {
     expect(result.capRemainingBeforeAmount).toBe(300);
     expect(result.payoutCreditedAmount).toBe(300);
     expect(result.capRemainingAfterAmount).toBe(0);
+  });
+
+  test('isSubscriptionActiveAsOf respects purchase and completion boundaries', () => {
+    const asOf = new Date('2026-01-15T12:00:00.000Z');
+    expect(
+      isSubscriptionActiveAsOf(
+        { purchaseAtUtc: new Date('2026-01-10'), status: 'active', completedAtUtc: null },
+        asOf
+      )
+    ).toBe(true);
+    expect(
+      isSubscriptionActiveAsOf(
+        {
+          purchaseAtUtc: new Date('2026-01-10'),
+          status: 'completed',
+          completedAtUtc: new Date('2026-01-20'),
+        },
+        asOf
+      )
+    ).toBe(true);
+    expect(
+      isSubscriptionActiveAsOf(
+        {
+          purchaseAtUtc: new Date('2026-01-10'),
+          status: 'completed',
+          completedAtUtc: new Date('2026-01-12'),
+        },
+        asOf
+      )
+    ).toBe(false);
+    expect(
+      isSubscriptionActiveAsOf(
+        { purchaseAtUtc: new Date('2026-01-20'), status: 'active', completedAtUtc: null },
+        asOf
+      )
+    ).toBe(false);
   });
 
   test('splitByFirstBranch places descendants under first left/right branch', () => {

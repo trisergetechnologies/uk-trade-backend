@@ -6,7 +6,7 @@ const { metaFor } = require('../utils/pagination');
 const { createPublicId } = require('../utils/public-id');
 const { isNetworkParticipant } = require('../utils/network-participant');
 
-/** Left vs right **team** under Main User root (`SEED_USER_EMAIL`), from signup `preferredCommunity`. */
+/** Left vs right branch from signup `preferredCommunity` / `community`. */
 function normalizeSignupBranch(signupCommunity) {
   return signupCommunity === 'right' ? 'right' : 'left';
 }
@@ -48,16 +48,16 @@ async function collectSubtreeIncludingRoot(rootUserId) {
 }
 
 /**
- * Next parent inside Main User's left or right branch only (level then createdAt within that subtree).
- * If Main has no direct child on that side yet, caller attaches as Main's child on that side.
+ * Next parent inside anchor user's left or right branch (level then createdAt within that subtree).
+ * If anchor has no direct child on that side yet, caller attaches as anchor's child on that side.
  */
-async function findPlacementParentInBranch(mainUserId, branch) {
-  const mainNode = await TreeNode.findOne({ userId: mainUserId }).lean();
-  if (!mainNode) return null;
+async function findPlacementParentInBranch(anchorUserId, branch) {
+  const anchorNode = await TreeNode.findOne({ userId: anchorUserId }).lean();
+  if (!anchorNode) return null;
 
-  const legRoot = await TreeNode.findOne({ parentUserId: mainNode.userId, side: branch }).lean();
+  const legRoot = await TreeNode.findOne({ parentUserId: anchorNode.userId, side: branch }).lean();
   if (!legRoot) {
-    return { type: 'under_main', mainNode };
+    return { type: 'under_anchor', anchorNode };
   }
 
   const subtree = await collectSubtreeIncludingRoot(legRoot.userId);
@@ -104,21 +104,31 @@ async function placeUserInTree(userId, signupCommunityInput) {
     );
   }
 
-  const placement = await findPlacementParentInBranch(mainUserId, branch);
-  if (!placement) {
-    throw new AppError(500, 'Tree placement failed: main user tree node missing');
+  const userRow = await User.findById(userId).select('referredBy').lean();
+  let anchorUserId = mainUserId;
+  if (userRow?.referredBy) {
+    const referrer = await User.findById(userRow.referredBy).select('role').lean();
+    if (referrer && referrer.role === ROLES.USER) {
+      const referrerNode = await TreeNode.findOne({ userId: referrer._id }).lean();
+      if (referrerNode) anchorUserId = referrer._id;
+    }
   }
 
-  if (placement.type === 'under_main') {
-    const { mainNode } = placement;
+  const placement = await findPlacementParentInBranch(anchorUserId, branch);
+  if (!placement) {
+    throw new AppError(500, 'Tree placement failed: placement anchor tree node missing');
+  }
+
+  if (placement.type === 'under_anchor') {
+    const { anchorNode } = placement;
     return TreeNode.findOneAndUpdate(
       { userId },
       {
         userId,
-        parentUserId: mainNode.userId,
+        parentUserId: anchorNode.userId,
         side: branch,
         community: branch,
-        level: Number(mainNode.level || 0) + 1,
+        level: Number(anchorNode.level || 0) + 1,
       },
       { upsert: true, returnDocument: 'after' }
     );
@@ -603,6 +613,7 @@ function computeBranchUnderMainFromNode(node, mainUserId, nodeByUserId) {
 
 module.exports = {
   placeUserInTree,
+  findPlacementParentInBranch,
   getMainUserId,
   normalizeSignupBranch,
   computeBranchUnderMainFromNode,

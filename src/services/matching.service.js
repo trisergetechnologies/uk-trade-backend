@@ -23,13 +23,42 @@ function calculateMatchingPayout({ considerableAmount, matchingPercent, capBaseA
   return { rawPayoutAmount, capRemainingBeforeAmount, payoutCreditedAmount, capRemainingAfterAmount };
 }
 
-async function getActivePackageHoldersByUserIds(userIds) {
+function isSubscriptionActiveAsOf(sub, asOfUtc) {
+  const asOf = asOfUtc instanceof Date ? asOfUtc : new Date(asOfUtc);
+  const purchased = sub.purchaseAtUtc ? new Date(sub.purchaseAtUtc) : null;
+  if (!purchased || purchased.getTime() > asOf.getTime()) return false;
+  if (sub.status === 'active') return true;
+  if (sub.status === 'completed') {
+    const completedAt = sub.completedAtUtc ? new Date(sub.completedAtUtc) : null;
+    return completedAt && completedAt.getTime() > asOf.getTime();
+  }
+  return false;
+}
+
+async function getActivePackageHoldersByUserIds(userIds, asOfUtc = null) {
   if (!userIds.length) return new Set();
-  const rows = await PackageSubscription.aggregate([
-    { $match: { userId: { $in: userIds }, status: 'active' } },
-    { $group: { _id: '$userId' } },
-  ]);
-  return new Set(rows.map((r) => String(r._id)));
+  if (!asOfUtc) {
+    const rows = await PackageSubscription.aggregate([
+      { $match: { userId: { $in: userIds }, status: 'active' } },
+      { $group: { _id: '$userId' } },
+    ]);
+    return new Set(rows.map((r) => String(r._id)));
+  }
+
+  const subs = await PackageSubscription.find({ userId: { $in: userIds } }).lean();
+  const active = new Set();
+  for (const sub of subs) {
+    if (isSubscriptionActiveAsOf(sub, asOfUtc)) active.add(String(sub.userId));
+  }
+  return active;
+}
+
+async function getMaxActivePackageAmountAsOf(userId, asOfUtc) {
+  if (!asOfUtc) return getMaxActivePackageAmount(userId);
+  const subs = await PackageSubscription.find({ userId }).lean();
+  const amounts = subs.filter((s) => isSubscriptionActiveAsOf(s, asOfUtc)).map((s) => s.principalAmount);
+  if (!amounts.length) return 0;
+  return Math.max(...amounts);
 }
 
 function splitByFirstBranch(rootUserId, descendants) {
@@ -54,7 +83,7 @@ function splitByFirstBranch(rootUserId, descendants) {
   return result;
 }
 
-async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId) {
+async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc = null) {
   const minLevel = Number(earnerNode.level || 0) + 1;
   const maxLevel = Number(earnerNode.level || 0) + MAX_MATCHING_LEVEL;
   const descendants = (await collectDownlineDescendants(earnerNode.userId)).filter(
@@ -70,7 +99,7 @@ async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId) {
   if (triggerLevelFromEarner < 1 || triggerLevelFromEarner > MAX_MATCHING_LEVEL) return null;
 
   const allUserIds = descendants.map((n) => n.userId);
-  const activeHolders = await getActivePackageHoldersByUserIds(allUserIds);
+  const activeHolders = await getActivePackageHoldersByUserIds(allUserIds, asOfUtc);
 
   const leftActiveUserCount = split.left.filter((n) => activeHolders.has(String(n.userId))).length;
   const rightActiveUserCount = split.right.filter((n) => activeHolders.has(String(n.userId))).length;
@@ -94,6 +123,7 @@ async function createEventAndMaybeCredit({
   triggerBuyerUserId,
   earnerUser,
   snapshot,
+  asOfUtc = null,
 }) {
   const idempotencyKey = buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUser._id);
   const existing = await MatchingIncomeEvent.findOne({ idempotencyKey });
@@ -121,7 +151,9 @@ async function createEventAndMaybeCredit({
     return { status: 'skipped', event };
   }
 
-  const levelUserMaxValues = await Promise.all(snapshot.levelUsers.map((uid) => getMaxActivePackageAmount(uid)));
+  const levelUserMaxValues = await Promise.all(
+    snapshot.levelUsers.map((uid) => getMaxActivePackageAmountAsOf(uid, asOfUtc))
+  );
   const considerableAmount = round2(Math.max(0, ...levelUserMaxValues));
   if (considerableAmount <= 0) {
     const event = await MatchingIncomeEvent.create({
@@ -133,7 +165,7 @@ async function createEventAndMaybeCredit({
     return { status: 'skipped', event };
   }
 
-  const capBaseAmount = round2(await getMaxActivePackageAmount(earnerUser._id));
+  const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
   const totalPaid = await getTotalMatchingPaid(earnerUser._id);
   const capRemainingBeforeAmount = round2(Math.max(0, capBaseAmount - totalPaid));
   const { rawPayoutAmount, payoutCreditedAmount, capRemainingAfterAmount } = calculateMatchingPayout({
@@ -187,7 +219,7 @@ async function createEventAndMaybeCredit({
   return { status, event };
 }
 
-async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSubscriptionId }) {
+async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSubscriptionId, asOfUtc = null }) {
   if (!env.matchingIncomeEnabled) return { processed: 0, credited: 0, skipped: 0, duplicates: 0 };
   const triggerNode = await TreeNode.findOne({ userId: triggerBuyerUserId }).lean();
   if (!triggerNode) return { processed: 0, credited: 0, skipped: 0, duplicates: 0 };
@@ -211,7 +243,7 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
       continue;
     }
 
-    const snapshot = await getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId);
+    const snapshot = await getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc);
     if (snapshot) {
       processed += 1;
       const result = await createEventAndMaybeCredit({
@@ -219,6 +251,7 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
         triggerBuyerUserId,
         earnerUser,
         snapshot,
+        asOfUtc,
       });
       if (result.status === 'credited') credited += 1;
       else if (result.status === 'duplicate') duplicates += 1;
@@ -238,4 +271,7 @@ module.exports = {
   buildIdempotencyKey,
   calculateMatchingPayout,
   splitByFirstBranch,
+  isSubscriptionActiveAsOf,
+  getActivePackageHoldersByUserIds,
+  getMaxActivePackageAmountAsOf,
 };
