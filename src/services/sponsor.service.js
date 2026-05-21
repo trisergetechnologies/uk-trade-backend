@@ -59,14 +59,16 @@ async function creditSponsorOnPurchase({ buyerUserId, packageSubscriptionId, pur
   });
 
   if (creditedAmount > 0) {
+    const sourceName = buyer.name;
+    const sourceUserCode = buyer.userCode;
     await creditWallet({
       userId: referrer._id,
       amount: creditedAmount,
       contextType: 'sponsor_income',
       contextId: packageSubscriptionId,
       packageSubscriptionId,
-      notes: `Sponsor income from referral purchase`,
-      metadata: { gross, cap },
+      notes: `Sponsor income from ${sourceName} (${sourceUserCode}) purchase`,
+      metadata: { gross, cap, sourceName, sourceUserCode },
     });
     await recalculateEligibility(referrer._id.toString());
   }

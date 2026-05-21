@@ -18,6 +18,7 @@ const { AppError } = require('../utils/errors');
 const { decryptPassword } = require('../utils/password-cipher');
 const { getWalletOrThrow, addLedgerEntry } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
+const { getMyTeamSummary } = require('./tree.service');
 
 function toStartOfDay(dateInput) {
   const d = new Date(dateInput);
@@ -253,22 +254,66 @@ async function listAdminUsersWithPasswords({ page, limit, q, role, isActive }) {
 }
 
 async function getAdminUserDetail(userCode) {
-  const user = await User.findOne({ userCode }).select(
-    'name email role isActive userCode referralCode preferredCommunity createdAt updatedAt kyc'
-  );
-  if (!user) return null;
-  const [wallet, fundStats, withdrawalStats] = await Promise.all([
-    Wallet.findOne({ userId: user._id }).select('balance eligibleToWithdraw updatedAt'),
+  const userDoc = await User.findOne({ userCode })
+    .select(
+      'name email role isActive userCode referralCode preferredCommunity createdAt updatedAt kyc referredBy'
+    )
+    .populate('referredBy', 'name email userCode referralCode')
+    .lean();
+  if (!userDoc) return null;
+
+  const userId = userDoc._id;
+  let referrer = null;
+  if (userDoc.referredBy && typeof userDoc.referredBy === 'object') {
+    referrer = {
+      userCode: userDoc.referredBy.userCode,
+      name: userDoc.referredBy.name,
+      email: userDoc.referredBy.email,
+      referralCode: userDoc.referredBy.referralCode,
+    };
+  }
+  const { referredBy: _referredBy, ...user } = userDoc;
+
+  const [wallet, fundStats, withdrawalStats, subscriptions, teamSummary, treeNode] = await Promise.all([
+    Wallet.findOne({ userId }).select('balance eligibleToWithdraw updatedAt'),
     PaymentRequest.aggregate([
-      { $match: { userId: user._id } },
+      { $match: { userId } },
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
     WithdrawalRequest.aggregate([
-      { $match: { userId: user._id } },
+      { $match: { userId } },
       { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
+    PackageSubscription.find({ userId })
+      .sort({ purchaseAtUtc: -1 })
+      .populate('planId', 'code name')
+      .lean(),
+    getMyTeamSummary(userId),
+    TreeNode.findOne({ userId }).select('community side level').lean(),
   ]);
-  return { user, wallet, fundStats, withdrawalStats };
+
+  const packages = subscriptions.map((s) => ({
+    publicId: s.publicId,
+    amount: s.principalAmount,
+    status: s.status,
+    planCode: s.planId?.code,
+    planName: s.planId?.name,
+    purchaseAtUtc: s.purchaseAtUtc,
+    purchaseDateIst: s.purchaseDateIst,
+  }));
+
+  return {
+    user,
+    wallet,
+    fundStats,
+    withdrawalStats,
+    referrer,
+    packages,
+    teamSummary,
+    treeNode: treeNode
+      ? { community: treeNode.community, side: treeNode.side, level: treeNode.level }
+      : null,
+  };
 }
 
 async function setAdminUserStatus(userCode, isActive) {

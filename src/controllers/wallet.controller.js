@@ -1,5 +1,6 @@
 const { Wallet, WalletLedger } = require('../models');
 const { parsePagination, metaFor } = require('../utils/pagination');
+const { enrichLedgerEntries } = require('../services/wallet-ledger-enrich.service');
 
 async function myWallet(req, res, next) {
   try {
@@ -18,7 +19,8 @@ async function myLedger(req, res, next) {
       WalletLedger.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
       WalletLedger.countDocuments(filter),
     ]);
-    res.json({ success: true, data: entries, meta: metaFor(page, limit, total) });
+    const data = await enrichLedgerEntries(entries, req.user.sub);
+    res.json({ success: true, data, meta: metaFor(page, limit, total) });
   } catch (error) {
     next(error);
   }
