@@ -12,6 +12,7 @@ const {
   TreeNode,
   User,
   Wallet,
+  WalletLedger,
   WithdrawalRequest,
 } = require('../models');
 const { AppError } = require('../utils/errors');
@@ -19,6 +20,7 @@ const { decryptPassword } = require('../utils/password-cipher');
 const { getWalletOrThrow, addLedgerEntry } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
 const { getMyTeamSummary } = require('./tree.service');
+const { enrichLedgerEntries } = require('./wallet-ledger-enrich.service');
 
 function toStartOfDay(dateInput) {
   const d = new Date(dateInput);
@@ -316,6 +318,18 @@ async function getAdminUserDetail(userCode) {
   };
 }
 
+async function getAdminUserWalletLedger(userCode, { page, limit, skip }) {
+  const user = await User.findOne({ userCode }).select('_id');
+  if (!user) return null;
+  const filter = { userId: user._id };
+  const [entries, total] = await Promise.all([
+    WalletLedger.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    WalletLedger.countDocuments(filter),
+  ]);
+  const data = await enrichLedgerEntries(entries, user._id);
+  return { data, total };
+}
+
 async function setAdminUserStatus(userCode, isActive) {
   return User.findOneAndUpdate({ userCode }, { $set: { isActive: Boolean(isActive) } }, { new: true }).select(
     'name email role isActive userCode updatedAt'
@@ -495,6 +509,7 @@ module.exports = {
   listAdminUsers,
   listAdminUsersWithPasswords,
   getAdminUserDetail,
+  getAdminUserWalletLedger,
   setAdminUserStatus,
   lookupUserByCode,
   adminCreditUserWallet,

@@ -5,6 +5,7 @@ const { getSignedDownloadUrl } = require('../services/cloudinary.service');
 const {
   getAdminOverview,
   getAdminUserDetail,
+  getAdminUserWalletLedger,
   listAdminUsers,
   listAdminUsersWithPasswords,
   setAdminUserStatus,
@@ -73,6 +74,17 @@ async function adminGetUser(req, res, next) {
     const detail = await getAdminUserDetail(req.validated.params.userCode);
     if (!detail) throw new AppError(404, 'User not found');
     res.json({ success: true, data: detail });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminGetUserWalletLedger(req, res, next) {
+  try {
+    const { page, limit, skip } = parsePagination(req);
+    const result = await getAdminUserWalletLedger(req.validated.params.userCode, { page, limit, skip });
+    if (!result) throw new AppError(404, 'User not found');
+    res.json({ success: true, data: result.data, meta: metaFor(page, limit, result.total) });
   } catch (error) {
     next(error);
   }
@@ -347,6 +359,7 @@ module.exports = {
   adminListUsersPasswords,
   adminLookupUser,
   adminGetUser,
+  adminGetUserWalletLedger,
   adminSetUserStatus,
   adminCreditUser,
   adminPurchaseForUser,
