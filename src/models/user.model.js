@@ -18,6 +18,8 @@ const userSchema = new mongoose.Schema(
     treePlacedAt: { type: Date, default: null },
     isActive: { type: Boolean, default: true },
     firstMatchingDone: { type: Boolean, default: false, index: true },
+    /** Set by one-time milestone catch-up script; live matching rules unchanged for new activity. */
+    matchingMilestoneCatchUpDone: { type: Boolean, default: false, index: true },
     bankAccount: {
       accountHolderName: { type: String, default: '' },
       bankName: { type: String, default: '' },

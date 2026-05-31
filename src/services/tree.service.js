@@ -223,6 +223,63 @@ async function sumPrincipalForUserIds(userIds) {
   return Number(rows[0]?.total || 0);
 }
 
+const MAX_MATCHING_LEVEL = 5;
+
+function emptyMatchingWindowSummary() {
+  return {
+    maxMatchingLevel: MAX_MATCHING_LEVEL,
+    leftActiveTotal: 0,
+    rightActiveTotal: 0,
+    leftTotal: 0,
+    rightTotal: 0,
+    countsBalanced: true,
+    levels: Array.from({ length: MAX_MATCHING_LEVEL }, (_, i) => ({
+      levelUnderMe: i + 1,
+      leftActive: 0,
+      rightActive: 0,
+      leftTotal: 0,
+      rightTotal: 0,
+    })),
+  };
+}
+
+/** Active purchasers in levels 1–5 under viewer (same window as matching income). */
+function buildMatchingWindowSummary(meNode, descendants, purchasedSet) {
+  const earnerLevel = Number(meNode.level || 0);
+  const windowNodes = descendants.filter((n) => {
+    const rel = Number(n.level || 0) - earnerLevel;
+    return rel >= 1 && rel <= MAX_MATCHING_LEVEL;
+  });
+  const branchSplit = splitDownlineByFirstBranch(meNode.userId, windowNodes);
+
+  const leftActiveTotal = branchSplit.left.filter((n) => purchasedSet.has(String(n.userId))).length;
+  const rightActiveTotal = branchSplit.right.filter((n) => purchasedSet.has(String(n.userId))).length;
+
+  const levels = [];
+  for (let levelUnderMe = 1; levelUnderMe <= MAX_MATCHING_LEVEL; levelUnderMe += 1) {
+    const absLevel = earnerLevel + levelUnderMe;
+    const leftAtLevel = branchSplit.left.filter((n) => Number(n.level || 0) === absLevel);
+    const rightAtLevel = branchSplit.right.filter((n) => Number(n.level || 0) === absLevel);
+    levels.push({
+      levelUnderMe,
+      leftActive: leftAtLevel.filter((n) => purchasedSet.has(String(n.userId))).length,
+      rightActive: rightAtLevel.filter((n) => purchasedSet.has(String(n.userId))).length,
+      leftTotal: leftAtLevel.length,
+      rightTotal: rightAtLevel.length,
+    });
+  }
+
+  return {
+    maxMatchingLevel: MAX_MATCHING_LEVEL,
+    leftActiveTotal,
+    rightActiveTotal,
+    leftTotal: branchSplit.left.length,
+    rightTotal: branchSplit.right.length,
+    countsBalanced: leftActiveTotal === rightActiveTotal,
+    levels,
+  };
+}
+
 /** Team UI "active" = member has at least one active package purchase. */
 async function getPurchasedUserIdSet(userIds) {
   if (!userIds.length) return new Set();
@@ -248,6 +305,7 @@ async function getMyTeamSummary(userId) {
       myRightMembers: 0,
       myLeftInvestment: 0,
       myRightInvestment: 0,
+      matchingWindow: emptyMatchingWindowSummary(),
     };
   }
 
@@ -276,6 +334,7 @@ async function getMyTeamSummary(userId) {
     myRightMembers: rightIds.filter((id) => purchasedSet.has(String(id))).length,
     myLeftInvestment,
     myRightInvestment,
+    matchingWindow: buildMatchingWindowSummary(me, descendants, purchasedSet),
   };
 }
 
@@ -685,4 +744,7 @@ module.exports = {
   getMyTeamTree,
   getMyTeamTreeChildren,
   getMyTeamFocusWindow,
+  buildMatchingWindowSummary,
+  getPurchasedUserIdSet,
+  MAX_MATCHING_LEVEL,
 };
