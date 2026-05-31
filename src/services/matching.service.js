@@ -84,8 +84,9 @@ function splitByFirstBranch(rootUserId, descendants) {
 }
 
 async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc = null) {
-  const minLevel = Number(earnerNode.level || 0) + 1;
-  const maxLevel = Number(earnerNode.level || 0) + MAX_MATCHING_LEVEL;
+  const earnerLevel = Number(earnerNode.level || 0);
+  const minLevel = earnerLevel + 1;
+  const maxLevel = earnerLevel + MAX_MATCHING_LEVEL;
   const descendants = (await collectDownlineDescendants(earnerNode.userId)).filter(
     (n) => Number(n.level || 0) >= minLevel && Number(n.level || 0) <= maxLevel
   );
@@ -95,7 +96,7 @@ async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc =
   const triggerNode = descendantsById.get(String(triggerBuyerUserId));
   if (!triggerNode) return null;
 
-  const triggerLevelFromEarner = Number(triggerNode.level || 0) - Number(earnerNode.level || 0);
+  const triggerLevelFromEarner = Number(triggerNode.level || 0) - earnerLevel;
   if (triggerLevelFromEarner < 1 || triggerLevelFromEarner > MAX_MATCHING_LEVEL) return null;
 
   const allUserIds = descendants.map((n) => n.userId);
@@ -104,10 +105,50 @@ async function getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc =
   const leftActiveUserCount = split.left.filter((n) => activeHolders.has(String(n.userId))).length;
   const rightActiveUserCount = split.right.filter((n) => activeHolders.has(String(n.userId))).length;
 
-  const levelNodes = descendants.filter((n) => Number(n.level || 0) === Number(triggerNode.level || 0));
-  const levelUsers = levelNodes.filter((n) => activeHolders.has(String(n.userId))).map((n) => n.userId);
+  // First-payout gate signals: both directs must be purchasers, plus >=1 purchaser deeper.
+  const directLeftActivePurchaser = descendants.some(
+    (n) =>
+      String(n.parentUserId) === String(earnerNode.userId) &&
+      n.side !== 'right' &&
+      activeHolders.has(String(n.userId))
+  );
+  const directRightActivePurchaser = descendants.some(
+    (n) =>
+      String(n.parentUserId) === String(earnerNode.userId) &&
+      n.side === 'right' &&
+      activeHolders.has(String(n.userId))
+  );
+  const hasDeeperActivePurchaser = descendants.some(
+    (n) => Number(n.level || 0) >= earnerLevel + 2 && activeHolders.has(String(n.userId))
+  );
 
-  return { triggerLevelFromEarner, leftActiveUserCount, rightActiveUserCount, levelUsers };
+  return {
+    triggerLevelFromEarner,
+    leftActiveUserCount,
+    rightActiveUserCount,
+    directLeftActivePurchaser,
+    directRightActivePurchaser,
+    hasDeeperActivePurchaser,
+  };
+}
+
+/**
+ * Decide whether an earner is eligible for a matching payout on this trigger event.
+ * - First payout (firstMatchingDone === false): unlocked purely by the gate
+ *   (direct left purchaser + direct right purchaser + >=1 deeper purchaser), no equality needed.
+ * - Subsequent payouts: require left/right active purchaser counts to be equal.
+ */
+function evaluateMatchingEligibility(snapshot, firstMatchingDone) {
+  if (!firstMatchingDone) {
+    const gateSatisfied = !!(
+      snapshot.directLeftActivePurchaser &&
+      snapshot.directRightActivePurchaser &&
+      snapshot.hasDeeperActivePurchaser
+    );
+    return { eligible: gateSatisfied, reason: gateSatisfied ? 'first-gate-satisfied' : 'first-gate-not-satisfied' };
+  }
+  const equal = Number(snapshot.leftActiveUserCount) === Number(snapshot.rightActiveUserCount);
+  return { eligible: equal, reason: equal ? 'left-right-active-count-equal' : 'left-right-active-count-not-equal' };
 }
 
 async function getTotalMatchingPaid(earnerUserId) {
@@ -121,6 +162,7 @@ async function getTotalMatchingPaid(earnerUserId) {
 async function createEventAndMaybeCredit({
   triggerPurchaseSubscriptionId,
   triggerBuyerUserId,
+  triggerPurchaseAmount,
   earnerUser,
   snapshot,
   asOfUtc = null,
@@ -139,27 +181,30 @@ async function createEventAndMaybeCredit({
     leftActiveUserCount: snapshot.leftActiveUserCount,
     rightActiveUserCount: snapshot.rightActiveUserCount,
     firstMatchingBeforeEvent,
+    triggerPurchaseAmount: round2(triggerPurchaseAmount),
+    directLeftActivePurchaser: !!snapshot.directLeftActivePurchaser,
+    directRightActivePurchaser: !!snapshot.directRightActivePurchaser,
+    hasDeeperActivePurchaser: !!snapshot.hasDeeperActivePurchaser,
     idempotencyKey,
   };
 
-  if (snapshot.leftActiveUserCount !== snapshot.rightActiveUserCount) {
+  const eligibility = evaluateMatchingEligibility(snapshot, earnerUser.firstMatchingDone);
+  if (!eligibility.eligible) {
     const event = await MatchingIncomeEvent.create({
       ...eventBase,
       status: 'skipped',
-      reason: 'left-right-active-count-not-equal',
+      reason: eligibility.reason,
     });
     return { status: 'skipped', event };
   }
 
-  const levelUserMaxValues = await Promise.all(
-    snapshot.levelUsers.map((uid) => getMaxActivePackageAmountAsOf(uid, asOfUtc))
-  );
-  const considerableAmount = round2(Math.max(0, ...levelUserMaxValues));
+  // Payout base = the triggering purchase's own amount (4% of the last purchased package).
+  const considerableAmount = round2(triggerPurchaseAmount);
   if (considerableAmount <= 0) {
     const event = await MatchingIncomeEvent.create({
       ...eventBase,
       status: 'skipped',
-      reason: 'no-active-package-on-trigger-level',
+      reason: 'no-trigger-purchase-amount',
       considerableAmount: 0,
     });
     return { status: 'skipped', event };
@@ -192,7 +237,12 @@ async function createEventAndMaybeCredit({
     capRemainingBeforeAmount,
     payoutCreditedAmount,
     capRemainingAfterAmount,
-    metadata: { levelUserCount: snapshot.levelUsers.length },
+    metadata: {
+      eligibilityReason: eligibility.reason,
+      directLeftActivePurchaser: !!snapshot.directLeftActivePurchaser,
+      directRightActivePurchaser: !!snapshot.directRightActivePurchaser,
+      hasDeeperActivePurchaser: !!snapshot.hasDeeperActivePurchaser,
+    },
   });
 
   if (status === 'credited') {
@@ -224,6 +274,9 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
   const triggerNode = await TreeNode.findOne({ userId: triggerBuyerUserId }).lean();
   if (!triggerNode) return { processed: 0, credited: 0, skipped: 0, duplicates: 0 };
 
+  const triggerSub = await PackageSubscription.findById(triggerPurchaseSubscriptionId).select('principalAmount').lean();
+  const triggerPurchaseAmount = round2(triggerSub?.principalAmount || 0);
+
   let cursorParentUserId = triggerNode.parentUserId;
   let hops = 1;
   let processed = 0;
@@ -249,6 +302,7 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
       const result = await createEventAndMaybeCredit({
         triggerPurchaseSubscriptionId,
         triggerBuyerUserId,
+        triggerPurchaseAmount,
         earnerUser,
         snapshot,
         asOfUtc,
@@ -274,4 +328,6 @@ module.exports = {
   isSubscriptionActiveAsOf,
   getActivePackageHoldersByUserIds,
   getMaxActivePackageAmountAsOf,
+  evaluateMatchingEligibility,
+  getRelativeTreeSnapshot,
 };

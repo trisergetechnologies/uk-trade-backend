@@ -3,6 +3,7 @@ const {
   calculateMatchingPayout,
   splitByFirstBranch,
   isSubscriptionActiveAsOf,
+  evaluateMatchingEligibility,
 } = require('../src/services/matching.service');
 
 describe('matching.engine (unit)', () => {
@@ -70,5 +71,78 @@ describe('matching.engine (unit)', () => {
     const split = splitByFirstBranch(rootUserId, descendants);
     expect(split.left.map((x) => x.userId).sort()).toEqual(['L1', 'L2']);
     expect(split.right.map((x) => x.userId).sort()).toEqual(['R1', 'R2']);
+  });
+
+  describe('evaluateMatchingEligibility (first-gate vs equality)', () => {
+    test('first payout: gate satisfied (both directs + deeper purchaser) is eligible even when unequal', () => {
+      const snapshot = {
+        leftActiveUserCount: 2,
+        rightActiveUserCount: 1,
+        directLeftActivePurchaser: true,
+        directRightActivePurchaser: true,
+        hasDeeperActivePurchaser: true,
+      };
+      const result = evaluateMatchingEligibility(snapshot, false);
+      expect(result.eligible).toBe(true);
+      expect(result.reason).toBe('first-gate-satisfied');
+    });
+
+    test('first payout: missing a direct purchaser fails the gate', () => {
+      const snapshot = {
+        leftActiveUserCount: 3,
+        rightActiveUserCount: 3,
+        directLeftActivePurchaser: true,
+        directRightActivePurchaser: false,
+        hasDeeperActivePurchaser: true,
+      };
+      const result = evaluateMatchingEligibility(snapshot, false);
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toBe('first-gate-not-satisfied');
+    });
+
+    test('first payout: both directs but no deeper purchaser fails the gate', () => {
+      const snapshot = {
+        leftActiveUserCount: 1,
+        rightActiveUserCount: 1,
+        directLeftActivePurchaser: true,
+        directRightActivePurchaser: true,
+        hasDeeperActivePurchaser: false,
+      };
+      const result = evaluateMatchingEligibility(snapshot, false);
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toBe('first-gate-not-satisfied');
+    });
+
+    test('subsequent payout: requires left == right regardless of gate signals', () => {
+      const equalSnapshot = {
+        leftActiveUserCount: 3,
+        rightActiveUserCount: 3,
+        directLeftActivePurchaser: false,
+        directRightActivePurchaser: false,
+        hasDeeperActivePurchaser: false,
+      };
+      const equal = evaluateMatchingEligibility(equalSnapshot, true);
+      expect(equal.eligible).toBe(true);
+      expect(equal.reason).toBe('left-right-active-count-equal');
+
+      const unequal = evaluateMatchingEligibility(
+        { ...equalSnapshot, rightActiveUserCount: 2 },
+        true
+      );
+      expect(unequal.eligible).toBe(false);
+      expect(unequal.reason).toBe('left-right-active-count-not-equal');
+    });
+  });
+
+  test('calculateMatchingPayout applies 4% to the trigger purchase amount', () => {
+    const triggerPurchaseAmount = 9000;
+    const result = calculateMatchingPayout({
+      considerableAmount: triggerPurchaseAmount,
+      matchingPercent: 4,
+      capBaseAmount: 10000,
+      alreadyPaidAmount: 0,
+    });
+    expect(result.rawPayoutAmount).toBe(360);
+    expect(result.payoutCreditedAmount).toBe(360);
   });
 });
