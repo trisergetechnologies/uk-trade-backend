@@ -5,6 +5,7 @@ const { validate } = require('../validators/validate');
 const {
   adminGetPaymentProof,
   adminGetUser,
+  adminGetUserWalletLedger,
   adminLookupUser,
   adminListAuditLogs,
   adminListUsers,
@@ -37,6 +38,7 @@ const {
   adminUserTeamTreeSchema,
   adminUserTeamTreeChildrenSchema,
   adminUserTeamFocusSchema,
+  adminUserWalletLedgerSchema,
   adminCreatePlanSchema,
   adminCreatePackageSchema,
   adminPatchPlanSchema,
@@ -55,6 +57,11 @@ router.get('/user-passwords', adminListUsersPasswords);
 router.get('/users', adminListUsers);
 router.get('/users/lookup/:userCode', validate(adminLookupUserParamSchema), adminLookupUser);
 router.get('/users/:userCode/password', validate(adminUserCodeParamSchema), adminGetUserPassword);
+router.get(
+  '/users/:userCode/wallet/ledger',
+  validate(adminUserWalletLedgerSchema),
+  adminGetUserWalletLedger
+);
 router.get(
   '/users/:userCode/team/tree/children',
   validate(adminUserTeamTreeChildrenSchema),

@@ -183,6 +183,17 @@ const adminUserTeamFocusSchema = z.object({
   body: z.object({}).optional(),
 });
 
+const adminUserWalletLedgerSchema = z.object({
+  params: z.object({
+    userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()),
+  }),
+  query: z.object({
+    page: z.string().optional(),
+    limit: z.string().optional(),
+  }),
+  body: z.object({}).optional(),
+});
+
 module.exports = {
   adminUserCodeParamSchema,
   adminSetUserStatusSchema,
@@ -198,4 +209,5 @@ module.exports = {
   adminUserTeamTreeSchema,
   adminUserTeamTreeChildrenSchema,
   adminUserTeamFocusSchema,
+  adminUserWalletLedgerSchema,
 };

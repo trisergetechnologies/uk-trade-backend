@@ -246,19 +246,23 @@ async function createEventAndMaybeCredit({
   });
 
   if (status === 'credited') {
+    const triggerBuyer = await User.findById(triggerBuyerUserId).select('name userCode').lean();
+    const sourceName = triggerBuyer?.name || 'Member';
+    const sourceUserCode = triggerBuyer?.userCode || '';
+    const sourceNote = sourceUserCode ? `${sourceName} (${sourceUserCode})` : sourceName;
     await creditWallet({
       userId: earnerUser._id,
       amount: payoutCreditedAmount,
       contextType: 'matching_income',
       contextId: event._id,
       packageSubscriptionId: triggerPurchaseSubscriptionId,
-      notes: `Matching income credit on trigger purchase ${String(triggerPurchaseSubscriptionId)}`,
+      notes: `Matching income from ${sourceNote} purchase`,
       metadata: {
-        eventId: event._id,
-        triggerBuyerUserId: String(triggerBuyerUserId),
         triggerLevelFromEarner: snapshot.triggerLevelFromEarner,
         considerableAmount,
         matchingPercent: env.matchingIncomePercent,
+        sourceName,
+        sourceUserCode: sourceUserCode || undefined,
       },
     });
     if (!earnerUser.firstMatchingDone) {
