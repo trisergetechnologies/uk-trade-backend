@@ -11,17 +11,26 @@ describe('matching.engine (unit)', () => {
     expect(buildIdempotencyKey('sub123', 'user456')).toBe('matching:sub123:user456');
   });
 
-  test('calculateMatchingPayout computes raw payout and clamps to remaining cap', () => {
+  test('calculateMatchingPayout caps each event at earner package amount (no lifetime total)', () => {
     const result = calculateMatchingPayout({
-      considerableAmount: 10000,
+      considerableAmount: 200000,
       matchingPercent: 4,
-      capBaseAmount: 1000,
-      alreadyPaidAmount: 700,
+      capBaseAmount: 6000,
     });
-    expect(result.rawPayoutAmount).toBe(400);
-    expect(result.capRemainingBeforeAmount).toBe(300);
-    expect(result.payoutCreditedAmount).toBe(300);
-    expect(result.capRemainingAfterAmount).toBe(0);
+    expect(result.rawPayoutAmount).toBe(8000);
+    expect(result.payoutCreditedAmount).toBe(6000);
+    expect(result.capRemainingBeforeAmount).toBe(6000);
+    expect(result.capRemainingAfterAmount).toBe(6000);
+  });
+
+  test('calculateMatchingPayout pays full 4% when below per-event package cap', () => {
+    const result = calculateMatchingPayout({
+      considerableAmount: 100000,
+      matchingPercent: 4,
+      capBaseAmount: 6000,
+    });
+    expect(result.rawPayoutAmount).toBe(4000);
+    expect(result.payoutCreditedAmount).toBe(4000);
   });
 
   test('isSubscriptionActiveAsOf respects purchase and completion boundaries', () => {
@@ -140,7 +149,6 @@ describe('matching.engine (unit)', () => {
       considerableAmount: triggerPurchaseAmount,
       matchingPercent: 4,
       capBaseAmount: 10000,
-      alreadyPaidAmount: 0,
     });
     expect(result.rawPayoutAmount).toBe(360);
     expect(result.payoutCreditedAmount).toBe(360);

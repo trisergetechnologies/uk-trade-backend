@@ -241,15 +241,13 @@ async function simulateReplay() {
           skipped += 1;
         } else {
           const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
-          const alreadyPaid = paidByEarner.get(earnerId) || 0;
           const { payoutCreditedAmount } = calculateMatchingPayout({
             considerableAmount: triggerPurchaseAmount,
             matchingPercent: env.matchingIncomePercent,
             capBaseAmount,
-            alreadyPaidAmount: alreadyPaid,
           });
           if (payoutCreditedAmount > 0) {
-            paidByEarner.set(earnerId, round2(alreadyPaid + payoutCreditedAmount));
+            paidByEarner.set(earnerId, round2((paidByEarner.get(earnerId) || 0) + payoutCreditedAmount));
             eventsByEarner.set(earnerId, (eventsByEarner.get(earnerId) || 0) + 1);
             firstDone.add(earnerId);
             credited += 1;

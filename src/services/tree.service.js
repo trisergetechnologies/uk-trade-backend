@@ -223,6 +223,16 @@ async function sumPrincipalForUserIds(userIds) {
   return Number(rows[0]?.total || 0);
 }
 
+/** Team UI "active" = member has at least one active package purchase. */
+async function getPurchasedUserIdSet(userIds) {
+  if (!userIds.length) return new Set();
+  const rows = await PackageSubscription.aggregate([
+    { $match: { userId: { $in: userIds }, status: 'active' } },
+    { $group: { _id: '$userId' } },
+  ]);
+  return new Set(rows.map((r) => String(r._id)));
+}
+
 async function getMyTeamSummary(userId) {
   const me = await TreeNode.findOne({ userId }).lean();
   if (!me) {
@@ -243,8 +253,7 @@ async function getMyTeamSummary(userId) {
 
   const descendants = await collectDownlineDescendants(me.userId);
   const allIds = descendants.map((row) => row.userId);
-  const users = allIds.length ? await User.find({ _id: { $in: allIds } }).select('_id isActive').lean() : [];
-  const activeSet = new Set(users.filter((u) => !!u.isActive).map((u) => String(u._id)));
+  const purchasedSet = await getPurchasedUserIdSet(allIds);
   const directMembers = descendants.filter((n) => String(n.parentUserId) === String(me.userId)).length;
 
   const branchSplit = splitDownlineByFirstBranch(me.userId, descendants);
@@ -258,13 +267,13 @@ async function getMyTeamSummary(userId) {
   return {
     totalMembers: descendants.length,
     directMembers,
-    activeMembers: descendants.filter((d) => activeSet.has(String(d.userId))).length,
-    inactiveMembers: descendants.filter((d) => !activeSet.has(String(d.userId))).length,
+    activeMembers: descendants.filter((d) => purchasedSet.has(String(d.userId))).length,
+    inactiveMembers: descendants.filter((d) => !purchasedSet.has(String(d.userId))).length,
     maxLevel: descendants.reduce((mx, d) => Math.max(mx, Number(d.level || 0)), 0),
     leftCommunityMembers: descendants.filter((d) => d.community === 'left').length,
     rightCommunityMembers: descendants.filter((d) => d.community === 'right').length,
-    myLeftMembers: leftIds.length,
-    myRightMembers: rightIds.length,
+    myLeftMembers: leftIds.filter((id) => purchasedSet.has(String(id))).length,
+    myRightMembers: rightIds.filter((id) => purchasedSet.has(String(id))).length,
     myLeftInvestment,
     myRightInvestment,
   };
@@ -286,9 +295,10 @@ async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q 
   const relatedIds = [...new Set([...userIds, ...parentIds].map((id) => String(id)))];
   await ensureUserCodesForMany(relatedIds);
   const relatedUsers = relatedIds.length
-    ? await User.find({ _id: { $in: relatedIds } }).select('_id name email userCode isActive createdAt').lean()
+    ? await User.find({ _id: { $in: relatedIds } }).select('_id name email userCode createdAt').lean()
     : [];
   const userById = new Map(relatedUsers.map((u) => [String(u._id), u]));
+  const purchasedSet = await getPurchasedUserIdSet(userIds);
 
   let rows = nodes.map((node) => {
     const member = userById.get(String(node.userId));
@@ -303,7 +313,7 @@ async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q 
       memberName: member?.name || '',
       memberEmail: member?.email || '',
       memberUserCode: member?.userCode || '',
-      memberIsActive: !!member?.isActive,
+      memberIsActive: purchasedSet.has(String(node.userId)),
       joinedAt: member?.createdAt || node.createdAt,
       sponsorName: sponsor?.name || '-',
       sponsorUserCode: sponsor?.userCode || '-',
@@ -337,8 +347,9 @@ async function getMyTeamMembers(userId, { page = 1, limit = 20, type = 'all', q 
   return { data: rows.slice(skip, skip + limit), total };
 }
 
-async function getMyTeamTree(userId, { maxDepth = 6, maxNodes = 500 } = {}) {
+async function getMyTeamTree(userId, { maxRelativeDepth = 5, maxNodes = 500 } = {}) {
   const meNode = await TreeNode.findOne({ userId }).lean();
+  const depthApplied = Math.max(1, Math.min(5, Number(maxRelativeDepth) || 5));
   if (!meNode) {
     return {
       root: null,
@@ -346,16 +357,18 @@ async function getMyTeamTree(userId, { maxDepth = 6, maxNodes = 500 } = {}) {
       totalNodes: 0,
       shownNodes: 0,
       truncated: false,
-      maxDepthApplied: maxDepth,
+      maxDepthApplied: depthApplied,
       maxNodesApplied: maxNodes,
     };
   }
 
   await ensureUserCodeForUser(userId);
-  const meUser = await User.findById(userId).select('name email userCode isActive').lean();
+  const meUser = await User.findById(userId).select('name email userCode').lean();
+  const myLevel = Number(meNode.level || 0);
+  const maxLevel = myLevel + depthApplied;
   const descendants = await collectDownlineDescendants(meNode.userId);
   const bounded = descendants
-    .filter((n) => Number(n.level || 0) <= maxDepth)
+    .filter((n) => Number(n.level || 0) <= maxLevel)
     .sort((a, b) => {
       if (a.level !== b.level) return a.level - b.level;
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
@@ -370,9 +383,10 @@ async function getMyTeamTree(userId, { maxDepth = 6, maxNodes = 500 } = {}) {
   const uniqueIds = [...new Set(ids)];
   await ensureUserCodesForMany(uniqueIds);
   const users = uniqueIds.length
-    ? await User.find({ _id: { $in: uniqueIds } }).select('_id name email userCode isActive createdAt').lean()
+    ? await User.find({ _id: { $in: uniqueIds } }).select('_id name email userCode createdAt').lean()
     : [];
   const userById = new Map(users.map((u) => [String(u._id), u]));
+  const purchasedSet = await getPurchasedUserIdSet(uniqueIds);
 
   const childCount = new Map();
   for (const n of shown) {
@@ -383,45 +397,49 @@ async function getMyTeamTree(userId, { maxDepth = 6, maxNodes = 500 } = {}) {
   const levelMap = new Map();
   for (const n of shown) {
     const level = Number(n.level || 0);
+    const relativeLevel = level - myLevel;
     const member = userById.get(String(n.userId));
     const sponsor = n.parentUserId ? userById.get(String(n.parentUserId)) : null;
     const row = {
       memberUserCode: member?.userCode || '',
       memberName: member?.name || '',
       memberEmail: member?.email || '',
-      memberIsActive: !!member?.isActive,
+      memberIsActive: purchasedSet.has(String(n.userId)),
       sponsorUserCode: sponsor?.userCode || '',
       sponsorName: sponsor?.name || '',
+      parentUserCode: sponsor?.userCode || '',
       side: n.side,
       community: n.community,
-      level: level,
+      level,
+      relativeLevel,
       joinedAt: member?.createdAt || n.createdAt,
       directChildrenCount: childCount.get(String(n.userId)) || 0,
     };
-    if (!levelMap.has(level)) levelMap.set(level, []);
-    levelMap.get(level).push(row);
+    if (!levelMap.has(relativeLevel)) levelMap.set(relativeLevel, []);
+    levelMap.get(relativeLevel).push(row);
   }
 
   const levels = [...levelMap.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([level, nodes]) => ({ level, nodes }));
+    .map(([relativeLevel, nodes]) => ({ level: relativeLevel, relativeLevel, nodes }));
 
   return {
     root: {
       memberUserCode: meUser?.userCode || '',
       memberName: meUser?.name || '',
       memberEmail: meUser?.email || '',
-      memberIsActive: !!meUser?.isActive,
+      memberIsActive: purchasedSet.has(String(meNode.userId)),
       side: meNode.side,
       community: meNode.community,
       level: meNode.level || 0,
+      relativeLevel: 0,
       directChildrenCount: childCount.get(String(meNode.userId)) || 0,
     },
     levels,
     totalNodes: bounded.length,
     shownNodes: shown.length,
     truncated: bounded.length > shown.length,
-    maxDepthApplied: maxDepth,
+    maxDepthApplied: depthApplied,
     maxNodesApplied: maxNodes,
   };
 }
@@ -448,9 +466,10 @@ async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100, asAd
   const childIds = childrenNodes.map((n) => n.userId);
   await ensureUserCodesForMany(childIds.map((id) => String(id)));
   const users = childIds.length
-    ? await User.find({ _id: { $in: childIds } }).select('_id name email userCode isActive createdAt').lean()
+    ? await User.find({ _id: { $in: childIds } }).select('_id name email userCode createdAt').lean()
     : [];
   const userById = new Map(users.map((u) => [String(u._id), u]));
+  const purchasedSet = await getPurchasedUserIdSet(childIds);
 
   const childParentIds = childrenNodes.map((n) => n.userId);
   const grandCountRows = childParentIds.length
@@ -467,7 +486,7 @@ async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100, asAd
       memberUserCode: member?.userCode || '',
       memberName: member?.name || '',
       memberEmail: member?.email || '',
-      memberIsActive: !!member?.isActive,
+      memberIsActive: purchasedSet.has(String(node.userId)),
       sponsorUserCode: parentUserCode,
       sponsorName: target?.name || '',
       side: node.side,
@@ -481,14 +500,16 @@ async function getMyTeamTreeChildren(userId, { parentUserCode, limit = 100, asAd
   return { parentUserCode, data };
 }
 
-function toTreeCard(node, member, sponsor, childrenCount = 0) {
+function toTreeCard(node, member, sponsor, childrenCount = 0, purchasedSet) {
+  const userKey = String(node?.userId || member?._id || '');
   return {
     memberUserCode: member?.userCode || '',
     memberName: member?.name || '',
     memberEmail: member?.email || '',
-    memberIsActive: !!member?.isActive,
+    memberIsActive: purchasedSet ? purchasedSet.has(userKey) : false,
     sponsorUserCode: sponsor?.userCode || '',
     sponsorName: sponsor?.name || '',
+    parentUserCode: sponsor?.userCode || '',
     side: node?.side || 'left',
     community: node?.community || 'left',
     level: Number(node?.level || 0),
@@ -497,20 +518,30 @@ function toTreeCard(node, member, sponsor, childrenCount = 0) {
   };
 }
 
-async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = false } = {}) {
+async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = false, maxRelativeDepth = 5 } = {}) {
   await ensureUserCodeForUser(userId);
-  const viewer = await User.findById(userId).select('_id userCode name email isActive createdAt').lean();
+  const viewer = await User.findById(userId).select('_id userCode name email createdAt').lean();
   if (!viewer) throw new AppError(404, 'User not found');
 
   const viewerNode = await TreeNode.findOne({ userId: viewer._id }).lean();
   if (!viewerNode) {
-    return { parent: null, focus: null, children: [], grandchildrenByParent: {}, relation: 'self' };
+    return {
+      parent: null,
+      focus: null,
+      children: [],
+      grandchildrenByParent: {},
+      levels: [],
+      relation: 'self',
+      maxRelativeDepthApplied: 0,
+    };
   }
+
+  const depthApplied = Math.max(1, Math.min(5, Number(maxRelativeDepth) || 5));
 
   let targetUser = viewer;
   if (targetUserCode && targetUserCode.trim()) {
     targetUser = await User.findOne({ userCode: targetUserCode.trim().toUpperCase() })
-      .select('_id userCode name email isActive createdAt')
+      .select('_id userCode name email createdAt')
       .lean();
     if (!targetUser) throw new AppError(404, 'Target user not found');
   }
@@ -536,28 +567,25 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = fal
   else if (isParentOfViewer) relation = 'parent';
   else if (isDescendant) relation = 'descendant';
   else if (asAdmin) relation = 'admin_view';
+  const focusBaseLevel = Number(targetNode.level || 0);
+  const maxLevel = focusBaseLevel + depthApplied;
   const parentNode = targetNode.parentUserId ? await TreeNode.findOne({ userId: targetNode.parentUserId }).lean() : null;
-  const directChildNodes = await TreeNode.find({ parentUserId: targetNode.userId }).sort({ createdAt: 1 }).lean();
-  const grandChildNodes = directChildNodes.length
-    ? await TreeNode.find({ parentUserId: { $in: directChildNodes.map((n) => n.userId) } }).sort({ createdAt: 1 }).lean()
-    : [];
+  const downlineNodes = (await collectDownlineDescendants(targetNode.userId)).filter(
+    (n) => Number(n.level || 0) <= maxLevel
+  );
 
-  const allIds = [
-    String(targetNode.userId),
-    ...(parentNode ? [String(parentNode.userId)] : []),
-    ...directChildNodes.map((n) => String(n.userId)),
-    ...grandChildNodes.map((n) => String(n.userId)),
-  ];
-  const uniqueIds = [...new Set(allIds)];
-  await ensureUserCodesForMany(uniqueIds);
-  const users = uniqueIds.length
-    ? await User.find({ _id: { $in: uniqueIds } }).select('_id name email userCode isActive createdAt').lean()
+  const allNodeRows = [targetNode, ...(parentNode ? [parentNode] : []), ...downlineNodes];
+  const allIds = [...new Set(allNodeRows.map((n) => String(n.userId)))];
+  await ensureUserCodesForMany(allIds);
+  const users = allIds.length
+    ? await User.find({ _id: { $in: allIds } }).select('_id name email userCode createdAt').lean()
     : [];
   const userById = new Map(users.map((u) => [String(u._id), u]));
+  const purchasedSet = await getPurchasedUserIdSet(allNodeRows.map((n) => n.userId));
 
-  const childCountRows = uniqueIds.length
+  const childCountRows = allIds.length
     ? await TreeNode.aggregate([
-        { $match: { parentUserId: { $in: uniqueIds.map((id) => userById.get(id)?._id).filter(Boolean) } } },
+        { $match: { parentUserId: { $in: allIds.map((id) => userById.get(id)?._id).filter(Boolean) } } },
         { $group: { _id: '$parentUserId', count: { $sum: 1 } } },
       ])
     : [];
@@ -568,30 +596,62 @@ async function getMyTeamFocusWindow(userId, { targetUserCode = '', asAdmin = fal
         parentNode,
         userById.get(String(parentNode.userId)),
         null,
-        childCount.get(String(parentNode.userId)) || 0
+        childCount.get(String(parentNode.userId)) || 0,
+        purchasedSet
       )
     : null;
   const focus = toTreeCard(
     targetNode,
     userById.get(String(targetNode.userId)),
     parentNode ? userById.get(String(parentNode.userId)) : null,
-    childCount.get(String(targetNode.userId)) || 0
+    childCount.get(String(targetNode.userId)) || 0,
+    purchasedSet
   );
 
+  const levels = [];
+  for (let rel = 1; rel <= depthApplied; rel += 1) {
+    const absLevel = focusBaseLevel + rel;
+    const nodes = downlineNodes
+      .filter((n) => Number(n.level || 0) === absLevel)
+      .map((n) =>
+        toTreeCard(
+          n,
+          userById.get(String(n.userId)),
+          userById.get(String(n.parentUserId)),
+          childCount.get(String(n.userId)) || 0,
+          purchasedSet
+        )
+      );
+    levels.push({ relativeLevel: rel, absoluteLevel: absLevel, nodes });
+  }
+
+  const directChildNodes = downlineNodes.filter((n) => String(n.parentUserId) === String(targetNode.userId));
   const children = directChildNodes.map((n) =>
-    toTreeCard(n, userById.get(String(n.userId)), userById.get(String(targetNode.userId)), childCount.get(String(n.userId)) || 0)
+    toTreeCard(
+      n,
+      userById.get(String(n.userId)),
+      userById.get(String(targetNode.userId)),
+      childCount.get(String(n.userId)) || 0,
+      purchasedSet
+    )
   );
   const grandchildrenByParent = {};
   for (const childNode of directChildNodes) {
     const key = userById.get(String(childNode.userId))?.userCode || '';
-    grandchildrenByParent[key] = grandChildNodes
-      .filter((n) => String(n.parentUserId) === String(childNode.userId))
+    grandchildrenByParent[key] = downlineNodes
+      .filter((n) => String(n.parentUserId) === String(childNode.userId) && Number(n.level || 0) === focusBaseLevel + 2)
       .map((n) =>
-        toTreeCard(n, userById.get(String(n.userId)), userById.get(String(childNode.userId)), childCount.get(String(n.userId)) || 0)
+        toTreeCard(
+          n,
+          userById.get(String(n.userId)),
+          userById.get(String(childNode.userId)),
+          childCount.get(String(n.userId)) || 0,
+          purchasedSet
+        )
       );
   }
 
-  return { parent, focus, children, grandchildrenByParent, relation };
+  return { parent, focus, children, grandchildrenByParent, levels, relation, maxRelativeDepthApplied: depthApplied };
 }
 
 /**

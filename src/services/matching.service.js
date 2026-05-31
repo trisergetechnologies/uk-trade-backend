@@ -15,12 +15,19 @@ function buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUserId) {
   return `matching:${String(triggerPurchaseSubscriptionId)}:${String(earnerUserId)}`;
 }
 
-function calculateMatchingPayout({ considerableAmount, matchingPercent, capBaseAmount, alreadyPaidAmount }) {
+/** Per-event ceiling: min(4% of trigger amount, earner's greatest active package). No lifetime total cap. */
+function calculateMatchingPayout({ considerableAmount, matchingPercent, capBaseAmount }) {
   const rawPayoutAmount = round2((Number(considerableAmount || 0) * Number(matchingPercent || 0)) / 100);
-  const capRemainingBeforeAmount = round2(Math.max(0, Number(capBaseAmount || 0) - Number(alreadyPaidAmount || 0)));
-  const payoutCreditedAmount = round2(Math.min(rawPayoutAmount, capRemainingBeforeAmount));
-  const capRemainingAfterAmount = round2(Math.max(0, capRemainingBeforeAmount - payoutCreditedAmount));
-  return { rawPayoutAmount, capRemainingBeforeAmount, payoutCreditedAmount, capRemainingAfterAmount };
+  const perEventCapAmount = round2(Math.max(0, Number(capBaseAmount || 0)));
+  const payoutCreditedAmount = round2(Math.min(rawPayoutAmount, perEventCapAmount));
+  return {
+    rawPayoutAmount,
+    perEventCapAmount,
+    payoutCreditedAmount,
+    // Schema fields kept for audit; no lifetime depletion — same ceiling applies on every event.
+    capRemainingBeforeAmount: perEventCapAmount,
+    capRemainingAfterAmount: perEventCapAmount,
+  };
 }
 
 function isSubscriptionActiveAsOf(sub, asOfUtc) {
@@ -151,14 +158,6 @@ function evaluateMatchingEligibility(snapshot, firstMatchingDone) {
   return { eligible: equal, reason: equal ? 'left-right-active-count-equal' : 'left-right-active-count-not-equal' };
 }
 
-async function getTotalMatchingPaid(earnerUserId) {
-  const row = await MatchingIncomeEvent.aggregate([
-    { $match: { earnerUserId, status: 'credited' } },
-    { $group: { _id: null, total: { $sum: '$payoutCreditedAmount' } } },
-  ]);
-  return row.length ? round2(row[0].total) : 0;
-}
-
 async function createEventAndMaybeCredit({
   triggerPurchaseSubscriptionId,
   triggerBuyerUserId,
@@ -211,20 +210,21 @@ async function createEventAndMaybeCredit({
   }
 
   const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
-  const totalPaid = await getTotalMatchingPaid(earnerUser._id);
-  const capRemainingBeforeAmount = round2(Math.max(0, capBaseAmount - totalPaid));
-  const { rawPayoutAmount, payoutCreditedAmount, capRemainingAfterAmount } = calculateMatchingPayout({
-    considerableAmount,
-    matchingPercent: env.matchingIncomePercent,
-    capBaseAmount,
-    alreadyPaidAmount: totalPaid,
-  });
+  const { rawPayoutAmount, payoutCreditedAmount, capRemainingBeforeAmount, capRemainingAfterAmount } =
+    calculateMatchingPayout({
+      considerableAmount,
+      matchingPercent: env.matchingIncomePercent,
+      capBaseAmount,
+    });
 
   let reason = 'matching-income-credited';
   let status = 'credited';
-  if (capRemainingBeforeAmount <= 0 || payoutCreditedAmount <= 0) {
+  if (capBaseAmount <= 0) {
     status = 'skipped';
-    reason = 'no-remaining-cap';
+    reason = 'earner-has-no-active-package';
+  } else if (payoutCreditedAmount <= 0) {
+    status = 'skipped';
+    reason = 'zero-payout-after-cap';
   }
 
   const event = await MatchingIncomeEvent.create({

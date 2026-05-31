@@ -346,7 +346,9 @@ async function adminUserTeamFocus(req, res, next) {
     if (!root) throw new AppError(404, 'User not found');
     const raw = req.validated.query.targetUserCode;
     const targetUserCode = raw && String(raw).trim() ? String(raw).trim().toUpperCase() : '';
-    const data = await getMyTeamFocusWindow(root._id, { targetUserCode, asAdmin: true });
+    const depthRaw = Number.parseInt(String(req.query.depth || req.validated.query.depth || '5'), 10);
+    const maxRelativeDepth = Math.max(1, Math.min(5, Number.isFinite(depthRaw) ? depthRaw : 5));
+    const data = await getMyTeamFocusWindow(root._id, { targetUserCode, asAdmin: true, maxRelativeDepth });
     res.json({ success: true, data });
   } catch (error) {
     next(error);

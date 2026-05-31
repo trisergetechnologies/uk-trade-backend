@@ -68,11 +68,11 @@ async function myTeamMembers(req, res, next) {
 
 async function myTeamTree(req, res, next) {
   try {
-    const depthRaw = Number.parseInt(String(req.query.depth || '6'), 10);
+    const depthRaw = Number.parseInt(String(req.query.depth || '5'), 10);
     const nodesRaw = Number.parseInt(String(req.query.nodes || '500'), 10);
-    const depth = Math.max(1, Math.min(30, Number.isFinite(depthRaw) ? depthRaw : 6));
+    const maxRelativeDepth = Math.max(1, Math.min(5, Number.isFinite(depthRaw) ? depthRaw : 5));
     const nodes = Math.max(50, Math.min(5000, Number.isFinite(nodesRaw) ? nodesRaw : 500));
-    const data = await getMyTeamTree(req.user.sub, { maxDepth: depth, maxNodes: nodes });
+    const data = await getMyTeamTree(req.user.sub, { maxRelativeDepth, maxNodes: nodes });
     res.json({ success: true, data });
   } catch (error) {
     next(error);
@@ -94,7 +94,9 @@ async function myTeamTreeChildren(req, res, next) {
 async function myTeamFocusWindow(req, res, next) {
   try {
     const targetUserCode = String(req.query.userCode || '').trim().toUpperCase();
-    const data = await getMyTeamFocusWindow(req.user.sub, { targetUserCode });
+    const depthRaw = Number.parseInt(String(req.query.depth || '5'), 10);
+    const maxRelativeDepth = Math.max(1, Math.min(5, Number.isFinite(depthRaw) ? depthRaw : 5));
+    const data = await getMyTeamFocusWindow(req.user.sub, { targetUserCode, maxRelativeDepth });
     res.json({ success: true, data });
   } catch (error) {
     next(error);
