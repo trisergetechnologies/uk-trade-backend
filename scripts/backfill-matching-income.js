@@ -3,7 +3,7 @@
  *
  * Strategy: FULL RECOMPUTE (matching only — never touches the binary tree).
  *   1. Archive the existing matchingincomeevents collection (audit copy).
- *   2. Reverse every matching_income wallet credit already given and reset firstMatchingDone.
+ *   2. Reverse every matching_income wallet credit already given and reset firstMatchingDone + matchingMatchedVolume.
  *   3. Replay every package purchase in chronological order through the matching engine.
  *   4. Validate wallet/ledger balances and emit an old-vs-new delta report per earner.
  *
@@ -42,10 +42,10 @@ const {
 } = require('../src/models');
 const {
   creditMatchingOnPurchase,
-  getRelativeTreeSnapshot,
-  evaluateMatchingEligibility,
+  buildMatchingSnapshot,
   getMaxActivePackageAmountAsOf,
   calculateMatchingPayout,
+  calculateConsiderable,
   MAX_MATCHING_LEVEL,
 } = require('../src/services/matching.service');
 const { isNetworkParticipant } = require('../src/utils/network-participant');
@@ -144,7 +144,7 @@ async function reverseMatchingFromWallets() {
   }
   const deleted = await WalletLedger.deleteMany({ contextType: 'matching_income' });
   await MatchingIncomeEvent.deleteMany({});
-  await User.updateMany({}, { $set: { firstMatchingDone: false } });
+  await User.updateMany({}, { $set: { firstMatchingDone: false, matchingMatchedVolume: 0 } });
 
   return { ledgerRowsRemoved: deleted.deletedCount, usersAdjusted: byUser.size };
 }
@@ -180,15 +180,15 @@ async function replayMatching() {
 }
 
 /**
- * Read-only projection of the new matching logic over the full purchase history.
- * Mirrors creditMatchingOnPurchase's orchestration but writes nothing: cap usage and
- * the first-matching flag are tracked in memory so we can preview per-user payouts.
+ * Read-only projection of the volume-based matching logic over full purchase history.
+ * Tracks matched volume + firstMatchingDone in memory (mirrors DB state during replay).
  */
 async function simulateReplay() {
   const subs = await PackageSubscription.find({}).sort({ purchaseAtUtc: 1 }).lean();
 
   const paidByEarner = new Map();
   const eventsByEarner = new Map();
+  const matchedByEarner = new Map();
   const firstDone = new Set();
   const earnerNodeCache = new Map();
   const earnerUserCache = new Map();
@@ -232,24 +232,46 @@ async function simulateReplay() {
         continue;
       }
 
-      const snapshot = await getRelativeTreeSnapshot(earnerNode, triggerBuyerUserId, asOfUtc);
+      const earnerId = String(earnerUser._id);
+      const snapshot = await buildMatchingSnapshot({
+        earnerNode,
+        triggerBuyerUserId,
+        triggerSubscriptionId: sub._id,
+        asOfUtc,
+        matchedVolume: matchedByEarner.get(earnerId) || 0,
+        firstMatchingDone: firstDone.has(earnerId),
+      });
+
       if (snapshot) {
         processed += 1;
-        const earnerId = String(earnerUser._id);
-        const eligibility = evaluateMatchingEligibility(snapshot, firstDone.has(earnerId));
-        if (!eligibility.eligible || triggerPurchaseAmount <= 0) {
+        const calc = calculateConsiderable({
+          V: triggerPurchaseAmount,
+          leftVolume: snapshot.leftVolumeBefore,
+          rightVolume: snapshot.rightVolumeBefore,
+          matched: snapshot.matchedVolumeBefore,
+          legAtEarner: snapshot.legAtEarner,
+          firstMatchingDone: firstDone.has(earnerId),
+          parentAmount: snapshot.parentAmount,
+        });
+
+        if (calc.firstMatchingDoneAfter) firstDone.add(earnerId);
+        if (calc.considerable > 0) {
+          matchedByEarner.set(earnerId, calc.matchedAfter);
+        }
+
+        if (calc.considerable <= 0) {
           skipped += 1;
         } else {
           const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
           const { payoutCreditedAmount } = calculateMatchingPayout({
-            considerableAmount: triggerPurchaseAmount,
+            considerableAmount: calc.considerable,
             matchingPercent: env.matchingIncomePercent,
-            capBaseAmount,
+            maxPackageAmount: capBaseAmount,
+            capThreshold: env.matchingPackageCapThreshold,
           });
           if (payoutCreditedAmount > 0) {
             paidByEarner.set(earnerId, round2((paidByEarner.get(earnerId) || 0) + payoutCreditedAmount));
             eventsByEarner.set(earnerId, (eventsByEarner.get(earnerId) || 0) + 1);
-            firstDone.add(earnerId);
             credited += 1;
           } else {
             skipped += 1;
@@ -395,6 +417,16 @@ async function main() {
   report.matchingReplay = await replayMatching();
 
   if (!DRY_RUN) {
+    const creditedEvents = await MatchingIncomeEvent.countDocuments({ status: 'credited' });
+    const totalPayout = await MatchingIncomeEvent.aggregate([
+      { $match: { status: 'credited' } },
+      { $group: { _id: null, total: { $sum: '$payoutCreditedAmount' } } },
+    ]);
+    report.matchingReplayValidation = {
+      creditedEvents,
+      totalPayout: round2(totalPayout[0]?.total || 0),
+    };
+
     await recalculateEligibilityForAllPortfolioUsers();
     report.eligibility = { refreshed: true };
 

@@ -373,6 +373,24 @@ async function run() {
     'backfill-matching-milestone-catchup completed'
   );
 
+  // Plain stdout so operators see result without parsing logs.
+  console.log('\n=== MATCHING MILESTONE CATCH-UP SUMMARY ===');
+  console.log(`Mode: ${DRY_RUN ? 'DRY-RUN (no DB writes)' : 'LIVE (wallet + events written)'}`);
+  console.log(`Users scanned: ${report.usersScanned}`);
+  console.log(`Users with new milestones: ${report.usersWithCatchUp}`);
+  console.log(`Milestones credited: ${report.totalMilestonesCredited}`);
+  console.log(`Total amount: ${report.totalAmountCredited}`);
+  console.log(`Report file: ${outFile}`);
+  if (DRY_RUN) {
+    console.log('\nNOTE: --dry-run does NOT change matching income in the app.');
+    console.log('Re-run WITHOUT --dry-run to apply credits.\n');
+  } else if (report.totalMilestonesCredited === 0) {
+    console.log('\nWARNING: Live run credited 0 — check matchingMilestoneCatchUpDone flag or pending milestones.');
+    console.log('Run: node scripts/verify-matching-milestone-catchup.js --user-code USRIWHLVT\n');
+  } else {
+    console.log('\nDone. Users should see new Matching Income rows with fresh timestamps.\n');
+  }
+
   if (SINGLE_USER_CODE && report.perUser[0]) {
     logger.info({ row: report.perUser[0] }, 'single-user milestone catch-up summary');
   }

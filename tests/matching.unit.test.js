@@ -1,36 +1,51 @@
 const {
   buildIdempotencyKey,
   calculateMatchingPayout,
+  calculateConsiderable,
   splitByFirstBranch,
   isSubscriptionActiveAsOf,
-  evaluateMatchingEligibility,
 } = require('../src/services/matching.service');
 
-describe('matching.engine (unit)', () => {
+describe('matching.service (unit)', () => {
   test('buildIdempotencyKey is stable per trigger+earner pair', () => {
     expect(buildIdempotencyKey('sub123', 'user456')).toBe('matching:sub123:user456');
   });
 
-  test('calculateMatchingPayout caps each event at earner package amount (no lifetime total)', () => {
-    const result = calculateMatchingPayout({
-      considerableAmount: 200000,
-      matchingPercent: 4,
-      capBaseAmount: 6000,
+  describe('calculateMatchingPayout (re-exported from engine)', () => {
+    test('caps at max package when below 30k threshold', () => {
+      const result = calculateMatchingPayout({
+        considerableAmount: 10000000,
+        matchingPercent: 4,
+        maxPackageAmount: 25000,
+        capThreshold: 30000,
+      });
+      expect(result.rawPayoutAmount).toBe(400000);
+      expect(result.payoutCreditedAmount).toBe(25000);
+      expect(result.packageCapApplied).toBe(true);
     });
-    expect(result.rawPayoutAmount).toBe(8000);
-    expect(result.payoutCreditedAmount).toBe(6000);
-    expect(result.capRemainingBeforeAmount).toBe(6000);
-    expect(result.capRemainingAfterAmount).toBe(6000);
-  });
 
-  test('calculateMatchingPayout pays full 4% when below per-event package cap', () => {
-    const result = calculateMatchingPayout({
-      considerableAmount: 100000,
-      matchingPercent: 4,
-      capBaseAmount: 6000,
+    test('pays full 4% when max package at/above threshold', () => {
+      const result = calculateMatchingPayout({
+        considerableAmount: 100000,
+        matchingPercent: 4,
+        maxPackageAmount: 35000,
+        capThreshold: 30000,
+      });
+      expect(result.rawPayoutAmount).toBe(4000);
+      expect(result.payoutCreditedAmount).toBe(4000);
+      expect(result.packageCapApplied).toBe(false);
     });
-    expect(result.rawPayoutAmount).toBe(4000);
-    expect(result.payoutCreditedAmount).toBe(4000);
+
+    test('pays full 4% when raw below package cap', () => {
+      const result = calculateMatchingPayout({
+        considerableAmount: 10000,
+        matchingPercent: 4,
+        maxPackageAmount: 25000,
+        capThreshold: 30000,
+      });
+      expect(result.rawPayoutAmount).toBe(400);
+      expect(result.payoutCreditedAmount).toBe(400);
+    });
   });
 
   test('isSubscriptionActiveAsOf respects purchase and completion boundaries', () => {
@@ -82,75 +97,57 @@ describe('matching.engine (unit)', () => {
     expect(split.right.map((x) => x.userId).sort()).toEqual(['R1', 'R2']);
   });
 
-  describe('evaluateMatchingEligibility (first-gate vs equality)', () => {
-    test('first payout: gate satisfied (both directs + deeper purchaser) is eligible even when unequal', () => {
-      const snapshot = {
-        leftActiveUserCount: 2,
-        rightActiveUserCount: 1,
-        directLeftActivePurchaser: true,
-        directRightActivePurchaser: true,
-        hasDeeperActivePurchaser: true,
-      };
-      const result = evaluateMatchingEligibility(snapshot, false);
-      expect(result.eligible).toBe(true);
-      expect(result.reason).toBe('first-gate-satisfied');
+  describe('calculateConsiderable (volume-based)', () => {
+    test('first matching bundle on right leg', () => {
+      const result = calculateConsiderable({
+        V: 200,
+        leftVolume: 1100,
+        rightVolume: 550,
+        matched: 0,
+        legAtEarner: 'right',
+        firstMatchingDone: false,
+        parentAmount: 550,
+      });
+      expect(result.considerable).toBe(750);
+      expect(result.firstMatchingDoneAfter).toBe(true);
     });
 
-    test('first payout: missing a direct purchaser fails the gate', () => {
-      const snapshot = {
-        leftActiveUserCount: 3,
-        rightActiveUserCount: 3,
-        directLeftActivePurchaser: true,
-        directRightActivePurchaser: false,
-        hasDeeperActivePurchaser: true,
-      };
-      const result = evaluateMatchingEligibility(snapshot, false);
-      expect(result.eligible).toBe(false);
-      expect(result.reason).toBe('first-gate-not-satisfied');
+    test('ongoing short right leg', () => {
+      const result = calculateConsiderable({
+        V: 90,
+        leftVolume: 1100,
+        rightVolume: 750,
+        matched: 750,
+        legAtEarner: 'right',
+        firstMatchingDone: true,
+        parentAmount: 0,
+      });
+      expect(result.considerable).toBe(90);
     });
 
-    test('first payout: both directs but no deeper purchaser fails the gate', () => {
-      const snapshot = {
-        leftActiveUserCount: 1,
-        rightActiveUserCount: 1,
-        directLeftActivePurchaser: true,
-        directRightActivePurchaser: true,
-        hasDeeperActivePurchaser: false,
-      };
-      const result = evaluateMatchingEligibility(snapshot, false);
-      expect(result.eligible).toBe(false);
-      expect(result.reason).toBe('first-gate-not-satisfied');
+    test('ongoing long left leg → zero', () => {
+      const result = calculateConsiderable({
+        V: 180,
+        leftVolume: 1100,
+        rightVolume: 995,
+        matched: 995,
+        legAtEarner: 'left',
+        firstMatchingDone: true,
+        parentAmount: 0,
+      });
+      expect(result.considerable).toBe(0);
     });
 
-    test('subsequent payout: requires left == right regardless of gate signals', () => {
-      const equalSnapshot = {
-        leftActiveUserCount: 3,
-        rightActiveUserCount: 3,
-        directLeftActivePurchaser: false,
-        directRightActivePurchaser: false,
-        hasDeeperActivePurchaser: false,
-      };
-      const equal = evaluateMatchingEligibility(equalSnapshot, true);
-      expect(equal.eligible).toBe(true);
-      expect(equal.reason).toBe('left-right-active-count-equal');
-
-      const unequal = evaluateMatchingEligibility(
-        { ...equalSnapshot, rightActiveUserCount: 2 },
-        true
-      );
-      expect(unequal.eligible).toBe(false);
-      expect(unequal.reason).toBe('left-right-active-count-not-equal');
+    test('payout is 4% of considerable not trigger amount', () => {
+      const considerable = 750;
+      const result = calculateMatchingPayout({
+        considerableAmount: considerable,
+        matchingPercent: 4,
+        maxPackageAmount: 100000,
+        capThreshold: 30000,
+      });
+      expect(result.rawPayoutAmount).toBe(30);
+      expect(result.payoutCreditedAmount).toBe(30);
     });
-  });
-
-  test('calculateMatchingPayout applies 4% to the trigger purchase amount', () => {
-    const triggerPurchaseAmount = 9000;
-    const result = calculateMatchingPayout({
-      considerableAmount: triggerPurchaseAmount,
-      matchingPercent: 4,
-      capBaseAmount: 10000,
-    });
-    expect(result.rawPayoutAmount).toBe(360);
-    expect(result.payoutCreditedAmount).toBe(360);
   });
 });
