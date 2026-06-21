@@ -8,6 +8,7 @@ const {
   PackageSubscription,
   MatchingIncomeEvent,
   Plan,
+  WalletLedger,
 } = require('../src/models');
 const { creditMatchingOnPurchase } = require('../src/services/matching.service');
 const { calculateMatchingPayout } = require('../src/services/matching-engine');
@@ -130,6 +131,11 @@ describe('matching income (integration)', () => {
 
     const wallet = await Wallet.findOne({ userId: earner._id }).lean();
     expect(wallet.balance).toBe(20);
+
+    const purchaseAt = dSub.purchaseAtUtc.getTime();
+    expect(new Date(event.createdAt).getTime()).toBe(purchaseAt);
+    const ledger = await WalletLedger.findOne({ userId: earner._id, contextType: 'matching_income' }).lean();
+    expect(new Date(ledger.createdAt).getTime()).toBe(purchaseAt);
   });
 
   test('idempotency — duplicate purchase trigger does not double-credit', async () => {

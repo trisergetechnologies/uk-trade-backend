@@ -7,15 +7,52 @@ async function getWalletOrThrow(userId) {
   return wallet;
 }
 
-async function addLedgerEntry({ userId, amount, direction, contextType, contextId = null, packageSubscriptionId = null, notes = '', metadata = {} }) {
-  return WalletLedger.create({ userId, amount, direction, contextType, contextId, packageSubscriptionId, notes, metadata });
+async function addLedgerEntry({
+  userId,
+  amount,
+  direction,
+  contextType,
+  contextId = null,
+  packageSubscriptionId = null,
+  notes = '',
+  metadata = {},
+  createdAt = null,
+}) {
+  const payload = { userId, amount, direction, contextType, contextId, packageSubscriptionId, notes, metadata };
+  if (createdAt) {
+    const at = createdAt instanceof Date ? createdAt : new Date(createdAt);
+    if (!Number.isNaN(at.getTime())) {
+      payload.createdAt = at;
+      payload.updatedAt = at;
+    }
+  }
+  return WalletLedger.create(payload);
 }
 
-async function creditWallet({ userId, amount, contextType, contextId = null, packageSubscriptionId = null, notes = '', metadata = {} }) {
+async function creditWallet({
+  userId,
+  amount,
+  contextType,
+  contextId = null,
+  packageSubscriptionId = null,
+  notes = '',
+  metadata = {},
+  createdAt = null,
+}) {
   const wallet = await getWalletOrThrow(userId);
   wallet.balance += amount;
   await wallet.save();
-  await addLedgerEntry({ userId, amount, direction: 'credit', contextType, contextId, packageSubscriptionId, notes, metadata });
+  await addLedgerEntry({
+    userId,
+    amount,
+    direction: 'credit',
+    contextType,
+    contextId,
+    packageSubscriptionId,
+    notes,
+    metadata,
+    createdAt,
+  });
   return wallet;
 }
 

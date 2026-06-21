@@ -4,7 +4,7 @@ dotenv.config();
 
 const env = {
   port: Number(process.env.PORT || 5001),
-  mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/uk_trade',
+  mongoUri: process.env.MONGO_URI,
   /**
    * Destructive seed scripts run only when PROD_PROTECT=false (case-insensitive).
    * Any other value or unset blocks seeds to avoid accidental runs in production.

@@ -18,6 +18,14 @@ function buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUserId) {
   return `matching:${String(triggerPurchaseSubscriptionId)}:${String(earnerUserId)}`;
 }
 
+/** When replaying history, stamp events/ledger at the trigger purchase time. */
+function eventTimestamps(asOfUtc) {
+  if (!asOfUtc) return {};
+  const at = asOfUtc instanceof Date ? asOfUtc : new Date(asOfUtc);
+  if (Number.isNaN(at.getTime())) return {};
+  return { createdAt: at, updatedAt: at };
+}
+
 function isSubscriptionActiveAsOf(sub, asOfUtc) {
   const asOf = asOfUtc instanceof Date ? asOfUtc : new Date(asOfUtc);
   const purchased = sub.purchaseAtUtc ? new Date(sub.purchaseAtUtc) : null;
@@ -222,6 +230,7 @@ async function createEventAndMaybeCredit({
       capRemainingBeforeAmount: 0,
       payoutCreditedAmount: 0,
       capRemainingAfterAmount: 0,
+      ...eventTimestamps(asOfUtc),
     });
     return { status: 'skipped', event };
   }
@@ -255,6 +264,7 @@ async function createEventAndMaybeCredit({
     capRemainingBeforeAmount: payoutResult.capRemainingBeforeAmount,
     payoutCreditedAmount: payoutResult.payoutCreditedAmount,
     capRemainingAfterAmount: payoutResult.capRemainingAfterAmount,
+    ...eventTimestamps(asOfUtc),
   });
 
   await updateEarnerMatchingState({
@@ -284,6 +294,7 @@ async function createEventAndMaybeCredit({
         sourceUserCode: sourceUserCode || undefined,
         legAtEarner: snapshot.legAtEarner,
       },
+      createdAt: asOfUtc,
     });
   }
 
