@@ -301,6 +301,50 @@ describe('matching income (integration)', () => {
     expect(events[1].considerableAmount).toBe(120);
   });
 
+  test('live matching without asOfUtc counts active leg volumes (null-asOfUtc fix)', async () => {
+    const { earner, bl, cr } = await seedTableDMini();
+    const d = await createUser({ name: 'D', email: 'd-null-asof@test.local', referredBy: bl._id });
+    await createTreeNode({ userId: d._id, parentUserId: bl._id, side: 'left', level: 2 });
+
+    const dSub = await createSubscription({
+      userId: d._id,
+      planId: plan._id,
+      principalAmount: 150,
+      purchaseAtUtc: new Date('2026-01-02T10:00:00.000Z'),
+    });
+
+    await creditMatchingOnPurchase({
+      triggerBuyerUserId: d._id,
+      triggerPurchaseSubscriptionId: dSub._id,
+      asOfUtc: dSub.purchaseAtUtc,
+    });
+
+    const e = await createUser({ name: 'E', email: 'e-null-asof@test.local', referredBy: cr._id });
+    await createTreeNode({ userId: e._id, parentUserId: cr._id, side: 'left', level: 2 });
+    const eSub = await createSubscription({
+      userId: e._id,
+      planId: plan._id,
+      principalAmount: 120,
+      purchaseAtUtc: new Date('2026-01-03T10:00:00.000Z'),
+    });
+
+    const result = await creditMatchingOnPurchase({
+      triggerBuyerUserId: e._id,
+      triggerPurchaseSubscriptionId: eSub._id,
+    });
+
+    expect(result.credited).toBeGreaterThanOrEqual(1);
+    const event = await MatchingIncomeEvent.findOne({
+      earnerUserId: earner._id,
+      triggerBuyerUserId: e._id,
+    }).lean();
+    expect(event).toBeTruthy();
+    expect(event.leftVolumeBefore).toBeGreaterThan(0);
+    expect(event.rightVolumeBefore).toBeGreaterThan(0);
+    expect(event.status).toBe('credited');
+    expect(event.considerableAmount).toBeGreaterThan(0);
+  });
+
   test('payout engine parity — 4% considerable with cap threshold', () => {
     const row = TABLE_D[0];
     const payout = calculateMatchingPayout({

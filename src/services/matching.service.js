@@ -26,8 +26,16 @@ function eventTimestamps(asOfUtc) {
   return { createdAt: at, updatedAt: at };
 }
 
-function isSubscriptionActiveAsOf(sub, asOfUtc) {
+/** Live matching passes null; treat as now (not epoch — `new Date(null)` is 1970). */
+function resolveAsOfUtc(asOfUtc) {
+  if (asOfUtc == null) return new Date();
   const asOf = asOfUtc instanceof Date ? asOfUtc : new Date(asOfUtc);
+  if (Number.isNaN(asOf.getTime())) return new Date();
+  return asOf;
+}
+
+function isSubscriptionActiveAsOf(sub, asOfUtc) {
+  const asOf = resolveAsOfUtc(asOfUtc);
   const purchased = sub.purchaseAtUtc ? new Date(sub.purchaseAtUtc) : null;
   if (!purchased || purchased.getTime() > asOf.getTime()) return false;
   if (sub.status === 'active') return true;
@@ -381,14 +389,61 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
   return { processed, credited, skipped, duplicates };
 }
 
+/**
+ * Re-run matching for a purchase whose events were miscomputed (e.g. null-asOfUtc zero volumes).
+ * Deletes skipped zero-considerable events for that subscription, then replays at purchase time.
+ */
+async function reprocessMatchingForSubscription({ triggerPurchaseSubscriptionId, dryRun = false } = {}) {
+  if (!triggerPurchaseSubscriptionId) {
+    throw new Error('triggerPurchaseSubscriptionId is required');
+  }
+  const sub = await PackageSubscription.findById(triggerPurchaseSubscriptionId).lean();
+  if (!sub) throw new Error('Package subscription not found');
+
+  const miscomputedFilter = {
+    triggerPurchaseSubscriptionId,
+    status: 'skipped',
+    reason: 'zero-considerable',
+    leftVolumeBefore: 0,
+    rightVolumeBefore: 0,
+  };
+  const toRemove = await MatchingIncomeEvent.find(miscomputedFilter).lean();
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      triggerPurchaseSubscriptionId: String(triggerPurchaseSubscriptionId),
+      eventsToRemove: toRemove.length,
+      earnersAffected: [...new Set(toRemove.map((e) => String(e.earnerUserId)))],
+    };
+  }
+
+  if (toRemove.length) {
+    await MatchingIncomeEvent.deleteMany({ _id: { $in: toRemove.map((e) => e._id) } });
+  }
+
+  const replay = await creditMatchingOnPurchase({
+    triggerBuyerUserId: sub.userId,
+    triggerPurchaseSubscriptionId: sub._id,
+    asOfUtc: sub.purchaseAtUtc,
+  });
+
+  return {
+    eventsRemoved: toRemove.length,
+    replay,
+  };
+}
+
 module.exports = {
   creditMatchingOnPurchase,
+  reprocessMatchingForSubscription,
   MAX_MATCHING_LEVEL,
   buildIdempotencyKey,
   calculateMatchingPayout,
   calculateConsiderable,
   splitByFirstBranch,
   isSubscriptionActiveAsOf,
+  resolveAsOfUtc,
   getActivePackageHoldersByUserIds,
   getMaxActivePackageAmountAsOf,
   sumActivePrincipalForUserIdsAsOf,

@@ -84,6 +84,21 @@ describe('matching.service (unit)', () => {
     ).toBe(false);
   });
 
+  test('isSubscriptionActiveAsOf treats null asOfUtc as now for active subscriptions', () => {
+    expect(
+      isSubscriptionActiveAsOf(
+        { purchaseAtUtc: new Date('2026-01-10'), status: 'active', completedAtUtc: null },
+        null
+      )
+    ).toBe(true);
+    expect(
+      isSubscriptionActiveAsOf(
+        { purchaseAtUtc: new Date('2026-01-10'), status: 'active', completedAtUtc: null },
+        undefined
+      )
+    ).toBe(true);
+  });
+
   test('splitByFirstBranch places descendants under first left/right branch', () => {
     const rootUserId = 'U1';
     const descendants = [
