@@ -16,6 +16,7 @@
         "migrate:tree-main-root": "node scripts/migrate-tree-main-user-root.js",
         "migrate:referrer-tree-matching": "node scripts/migrate-referrer-tree-and-matching.js",
         "reprocess:matching-subscription": "node scripts/reprocess-matching-subscription.js",
+        "repair:eligible-bonus": "node scripts/repair-eligible-bonus.js",
         "analyze:tree-vs-signup": "node scripts/analyze-tree-vs-signup.js",
         "analyze:tree-vs-referrer": "node scripts/analyze-tree-vs-referrer.js",
         "lint": "eslint ."
