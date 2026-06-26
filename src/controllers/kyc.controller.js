@@ -1,7 +1,14 @@
 const { User } = require('../models');
 const { AppError } = require('../utils/errors');
-const { getSignedDownloadUrl } = require('../services/cloudinary.service');
+const { fetchKycDocument } = require('../services/cloudinary.service');
 const { submitMyKyc, getMyKyc, adminListKyc, adminReviewKyc, pickAsset } = require('../services/kyc.service');
+
+async function streamKycDocument(asset, res) {
+  const { buffer, contentType } = await fetchKycDocument(asset);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  res.end(buffer);
+}
 
 async function submitKyc(req, res, next) {
   try {
@@ -30,19 +37,7 @@ async function myKycDocument(req, res, next) {
     if (!user) throw new AppError(404, 'User not found');
     const asset = pickAsset(user, kind);
     if (!asset?.publicId) throw new AppError(404, 'Document not found');
-    const signedUrl = getSignedDownloadUrl(asset);
-    const upstream = await fetch(signedUrl);
-    if (!upstream.ok) {
-      throw new AppError(
-        502,
-        `Document could not be loaded from storage (upstream HTTP ${upstream.status}). Try again in a moment.`
-      );
-    }
-    const contentType = upstream.headers.get('content-type') || 'image/jpeg';
-    const arrayBuffer = await upstream.arrayBuffer();
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'private, max-age=60');
-    res.end(Buffer.from(arrayBuffer));
+    await streamKycDocument(asset, res);
   } catch (error) {
     next(error);
   }
@@ -75,19 +70,7 @@ async function adminKycDocument(req, res, next) {
     if (!user) throw new AppError(404, 'User not found');
     const asset = pickAsset(user, kind);
     if (!asset?.publicId) throw new AppError(404, 'Document not found');
-    const signedUrl = getSignedDownloadUrl(asset);
-    const upstream = await fetch(signedUrl);
-    if (!upstream.ok) {
-      throw new AppError(
-        502,
-        `Document could not be loaded from storage (upstream HTTP ${upstream.status}). Try again in a moment.`
-      );
-    }
-    const contentType = upstream.headers.get('content-type') || 'image/jpeg';
-    const arrayBuffer = await upstream.arrayBuffer();
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'private, max-age=60');
-    res.end(Buffer.from(arrayBuffer));
+    await streamKycDocument(asset, res);
   } catch (error) {
     next(error);
   }

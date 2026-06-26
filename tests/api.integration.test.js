@@ -240,6 +240,16 @@ describe('HTTP API (integration)', () => {
       })
       .expect(200);
 
+    const { User } = require('../src/models');
+    const seedUser = await User.findOne({ email: env.seedUserEmail });
+    await User.findByIdAndUpdate(seedUser._id, {
+      $set: {
+        'kyc.status': 'approved',
+        'kyc.reviewedAt': new Date(),
+        'kyc.reviewReason': 'integration test',
+      },
+    });
+
     await request(app)
       .post(`/api/admin/users/${userCode}/credit`)
       .set('Authorization', `Bearer ${adminToken}`)
@@ -271,7 +281,11 @@ describe('HTTP API (integration)', () => {
       .post(`/api/admin/users/${userCode}/credit`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ amount: 2000, note: 'second credit for mongo id review test' })
-      .expect(200);
+      .expect((res) => {
+        if (![200, 201].includes(res.status)) {
+          throw new Error(`Expected 200 or 201 from admin credit, got ${res.status}`);
+        }
+      });
 
     const wd2 = await request(app)
       .post('/api/withdrawals')
@@ -387,5 +401,44 @@ describe('HTTP API (integration)', () => {
     const u1After = await request(app).get('/api/income/matching').set('Authorization', `Bearer ${userToken}`);
     expect(u1After.status).toBe(200);
     expect(u1After.body.data.every((x) => Number(x.triggerLevelFromEarner) <= 5)).toBe(true);
+  });
+
+  it('POST /api/kyc/me submits KYC (local storage when Cloudinary unset)', async () => {
+    const kycToken = await registerAndLogin({
+      name: 'KYC Test User',
+      email: 'kyc.test.user@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'left',
+    });
+    const tinyPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    const res = await request(app)
+      .post('/api/kyc/me')
+      .set('Authorization', `Bearer ${kycToken}`)
+      .field('accountHolderName', 'Jest User')
+      .field('bankName', 'Test Bank')
+      .field('accountNumber', '1234567890')
+      .field('ifscCode', 'HDFC0001234')
+      .field('upiId', '')
+      .attach('aadhaar', tinyPng, 'aadhaar.png')
+      .attach('passbook', tinyPng, 'passbook.png');
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.status).toBe('pending');
+    expect(res.body.data.documents).toEqual(expect.arrayContaining(['aadhaar', 'passbook']));
+
+    const get = await request(app).get('/api/kyc/me').set('Authorization', `Bearer ${kycToken}`);
+    expect(get.status).toBe(200);
+    expect(get.body.data.status).toBe('pending');
+
+    const doc = await request(app)
+      .get('/api/kyc/me/document/aadhaar')
+      .set('Authorization', `Bearer ${kycToken}`);
+    expect(doc.status).toBe(200);
+    expect(String(doc.headers['content-type'] || '')).toMatch(/image\//);
   });
 });

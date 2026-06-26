@@ -50,6 +50,9 @@ async function submitMyKyc(userId, fileMap, bankInput = {}) {
   if (current === 'approved') {
     throw new AppError(400, 'KYC is already approved');
   }
+  if (current === 'pending') {
+    throw new AppError(400, 'KYC is already pending review');
+  }
 
   const accountHolderName = String(bankInput.accountHolderName || '').trim();
   const bankName = String(bankInput.bankName || '').trim();
@@ -67,38 +70,51 @@ async function submitMyKyc(userId, fileMap, bankInput = {}) {
   }
 
   const [aadhaarAsset, passbookAsset] = await Promise.all([
-    uploadKycDocument(aadhaar.buffer, aadhaar.originalname, 'aadhaar'),
-    uploadKycDocument(passbook.buffer, passbook.originalname, 'passbook'),
+    uploadKycDocument(aadhaar.buffer, aadhaar.originalname, 'aadhaar', aadhaar.mimetype),
+    uploadKycDocument(passbook.buffer, passbook.originalname, 'passbook', passbook.mimetype),
   ]);
 
-  user.kyc = {
-    status: 'pending',
-    aadhaarAsset,
-    passbookAsset,
-    submittedAt: new Date(),
-    reviewedBy: null,
-    reviewReason: '',
-    reviewedAt: null,
-  };
-  user.bankAccount = {
-    accountHolderName,
-    bankName,
-    accountNumber,
-    ifscCode,
-    upiId,
-    updatedAtUtc: new Date(),
-  };
-  await user.save();
+  const submittedAt = new Date();
+  const updated = await User.findByIdAndUpdate(
+    userId,
+    {
+      $set: {
+        kyc: {
+          status: 'pending',
+          aadhaarAsset,
+          passbookAsset,
+          aadhaarFrontAsset: { publicId: '', resourceType: 'image', format: 'jpg' },
+          aadhaarBackAsset: { publicId: '', resourceType: 'image', format: 'jpg' },
+          panAsset: { publicId: '', resourceType: 'image', format: 'jpg' },
+          photoAsset: { publicId: '', resourceType: 'image', format: 'jpg' },
+          submittedAt,
+          reviewedBy: null,
+          reviewReason: '',
+          reviewedAt: null,
+        },
+        bankAccount: {
+          accountHolderName,
+          bankName,
+          accountNumber,
+          ifscCode,
+          upiId,
+          updatedAtUtc: new Date(),
+        },
+      },
+    },
+    { new: true, returnDocument: 'after' }
+  );
+  if (!updated) throw new AppError(404, 'User not found');
 
   await AuditLog.create({
     actorUserId: userId,
     action: 'kyc_submitted',
     targetType: 'User',
-    targetId: user._id,
+    targetId: updated._id,
     details: { status: 'pending', bankUpdated: true },
   });
 
-  return kycSummary(user);
+  return kycSummary(updated);
 }
 
 async function getMyKyc(userId) {

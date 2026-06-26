@@ -1,7 +1,7 @@
 const express = require('express');
 const { authRequired } = require('../middlewares/auth.middleware');
 const { validate } = require('../validators/validate');
-const { uploadKyc } = require('../middlewares/upload.middleware');
+const { uploadKyc, wrapMulter } = require('../middlewares/upload.middleware');
 const { submitKyc, myKyc, myKycDocument } = require('../controllers/kyc.controller');
 const { submitKycSchema, myKycDocumentSchema } = require('../validators/kyc.validator');
 
@@ -13,7 +13,7 @@ const kycFields = uploadKyc.fields([
 ]);
 
 router.get('/me', authRequired, myKyc);
-router.post('/me', authRequired, kycFields, validate(submitKycSchema), submitKyc);
+router.post('/me', authRequired, wrapMulter(kycFields), validate(submitKycSchema), submitKyc);
 router.get('/me/document/:kind', authRequired, validate(myKycDocumentSchema), myKycDocument);
 
 module.exports = router;
