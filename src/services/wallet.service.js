@@ -62,10 +62,6 @@ async function debitWallet({ userId, amount, contextType, contextId = null, pack
   if (!Number.isFinite(debitAmount) || debitAmount <= 0) throw new AppError(400, 'Invalid debit amount');
   if (wallet.balance < debitAmount) throw new AppError(400, 'Insufficient wallet balance');
   wallet.balance -= debitAmount;
-  if (contextType === 'package_purchase') {
-    const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
-    wallet.eligibleBonus = Math.max(0, bonus - debitAmount);
-  }
   await wallet.save();
   await addLedgerEntry({
     userId,
@@ -77,7 +73,10 @@ async function debitWallet({ userId, amount, contextType, contextId = null, pack
     notes,
     metadata,
   });
-  return wallet;
+  if (contextType === 'package_purchase') {
+    await reconcileEligibleBonusFromLedger(userId);
+  }
+  return getWalletOrThrow(userId);
 }
 
 /** Replay admin credits vs package debits to fix eligibleBonus for existing wallets. */

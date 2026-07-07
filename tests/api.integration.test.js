@@ -441,4 +441,146 @@ describe('HTTP API (integration)', () => {
     expect(doc.status).toBe(200);
     expect(String(doc.headers['content-type'] || '')).toMatch(/image\//);
   });
+
+  it('admin PATCH /api/admin/kyc/:userCode/review approves unverified user when admin provides bank details', async () => {
+    const directToken = await registerAndLogin({
+      name: 'Direct KYC User',
+      email: 'direct.kyc.user@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'left',
+    });
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${directToken}`);
+    const userCode = me.body.data.userCode;
+
+    const approve = await request(app)
+      .patch(`/api/admin/kyc/${userCode}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        status: 'approved',
+        accountHolderName: 'Direct User',
+        bankName: 'Test Bank',
+        accountNumber: '9988776655',
+        ifscCode: 'HDFC0001234',
+      });
+    expect(approve.status).toBe(200);
+    expect(approve.body.data.kyc.status).toBe('approved');
+
+    const kyc = await request(app).get('/api/kyc/me').set('Authorization', `Bearer ${directToken}`);
+    expect(kyc.status).toBe(200);
+    expect(kyc.body.data.status).toBe('approved');
+
+    const bank = await request(app).get('/api/bank-account/me').set('Authorization', `Bearer ${directToken}`);
+    expect(bank.status).toBe(200);
+    expect(bank.body.data.isComplete).toBe(true);
+    expect(bank.body.data.accountNumberMasked).toMatch(/6655$/);
+  });
+
+  it('admin direct KYC approval still works when member already saved bank details', async () => {
+    const directToken = await registerAndLogin({
+      name: 'Direct KYC Existing Bank User',
+      email: 'direct.kyc.existing.bank@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'left',
+    });
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${directToken}`);
+    const userCode = me.body.data.userCode;
+
+    await request(app)
+      .put('/api/bank-account/me')
+      .set('Authorization', `Bearer ${directToken}`)
+      .send({
+        accountHolderName: 'Direct User',
+        bankName: 'Test Bank',
+        accountNumber: '9988776655',
+        ifscCode: 'HDFC0001234',
+      })
+      .expect(200);
+
+    const approve = await request(app)
+      .patch(`/api/admin/kyc/${userCode}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved' });
+    expect(approve.status).toBe(200);
+    expect(approve.body.data.kyc.status).toBe('approved');
+  });
+
+  it('admin direct KYC approval fails when bank details are missing', async () => {
+    const noBankToken = await registerAndLogin({
+      name: 'No Bank KYC User',
+      email: 'no.bank.kyc.user@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'right',
+    });
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${noBankToken}`);
+    const userCode = me.body.data.userCode;
+
+    const approve = await request(app)
+      .patch(`/api/admin/kyc/${userCode}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved' });
+    expect(approve.status).toBe(400);
+    expect(String(approve.body.message || '')).toMatch(/bank/i);
+  });
+
+  it('admin PATCH /api/admin/kyc/:userCode/review still approves pending submissions', async () => {
+    const pendingToken = await registerAndLogin({
+      name: 'Pending KYC User',
+      email: 'pending.kyc.user@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'left',
+    });
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${pendingToken}`);
+    const userCode = me.body.data.userCode;
+    const tinyPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'
+    );
+
+    const submit = await request(app)
+      .post('/api/kyc/me')
+      .set('Authorization', `Bearer ${pendingToken}`)
+      .field('accountHolderName', 'Pending User')
+      .field('bankName', 'Test Bank')
+      .field('accountNumber', '1122334455')
+      .field('ifscCode', 'HDFC0001234')
+      .field('upiId', '')
+      .attach('aadhaar', tinyPng, 'aadhaar.png')
+      .attach('passbook', tinyPng, 'passbook.png');
+    expect(submit.status).toBe(201);
+    expect(submit.body.data.status).toBe('pending');
+
+    const approve = await request(app)
+      .patch(`/api/admin/kyc/${userCode}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'approved', reason: 'Documents verified.' });
+    expect(approve.status).toBe(200);
+    expect(approve.body.data.kyc.status).toBe('approved');
+  });
+
+  it('admin cannot reject unverified KYC without a pending submission', async () => {
+    const rejectToken = await registerAndLogin({
+      name: 'Reject Unverified User',
+      email: 'reject.unverified.kyc@example.com',
+      referralCode: (
+        await request(app).get('/api/auth/me').set('Authorization', `Bearer ${userToken}`)
+      ).body.data.referralCode,
+      community: 'right',
+    });
+    const me = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${rejectToken}`);
+    const userCode = me.body.data.userCode;
+
+    const reject = await request(app)
+      .patch(`/api/admin/kyc/${userCode}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'rejected', reason: 'Should not work' });
+    expect(reject.status).toBe(400);
+  });
 });

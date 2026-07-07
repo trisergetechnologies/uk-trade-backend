@@ -17,7 +17,7 @@ const {
 } = require('../models');
 const { AppError } = require('../utils/errors');
 const { decryptPassword } = require('../utils/password-cipher');
-const { getWalletOrThrow, addLedgerEntry } = require('./wallet.service');
+const { getWalletOrThrow, addLedgerEntry, reconcileEligibleBonusFromLedger } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
 const { getMyTeamSummary } = require('./tree.service');
 const { enrichLedgerEntries } = require('./wallet-ledger-enrich.service');
@@ -383,9 +383,7 @@ async function adminCreditUserWallet({ adminUserId, toUserCode, amount, note = '
 
   const wallet = await getWalletOrThrow(receiver._id);
   wallet.balance += amt;
-  wallet.eligibleBonus = (Number(wallet.eligibleBonus) || 0) + amt;
   await wallet.save();
-  await recalculateEligibility(receiver._id);
 
   const transfer = await FundTransfer.create({
     fromUserId: admin._id,
@@ -406,6 +404,9 @@ async function adminCreditUserWallet({ adminUserId, toUserCode, amount, note = '
     notes: `Admin credit from ${admin.userCode}`,
     metadata: { fromAdminUserCode: admin.userCode, note: note || '' },
   });
+
+  await reconcileEligibleBonusFromLedger(receiver._id);
+  await recalculateEligibility(receiver._id);
 
   return transfer;
 }

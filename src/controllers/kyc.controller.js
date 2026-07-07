@@ -54,8 +54,14 @@ async function adminKycList(req, res, next) {
 
 async function adminKycReview(req, res, next) {
   try {
-    const { status, reason } = req.validated.body;
-    const data = await adminReviewKyc(req.user.sub, req.validated.params.userCode, status, reason);
+    const { status, reason, accountHolderName, bankName, accountNumber, ifscCode, upiId } = req.validated.body;
+    const data = await adminReviewKyc(req.user.sub, req.validated.params.userCode, status, reason, {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      ifscCode,
+      upiId,
+    });
     res.json({ success: true, data });
   } catch (error) {
     next(error);

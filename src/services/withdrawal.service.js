@@ -1,10 +1,56 @@
 const { WithdrawalRequest, AuditLog, User } = require('../models');
 const { getWalletOrThrow, debitWallet } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
-const { assertKycApproved } = require('./kyc.service');
+const { assertKycApproved, isBankAccountComplete } = require('./kyc.service');
 const { AppError } = require('../utils/errors');
 
 const OBJECT_ID_HEX = /^[a-fA-F0-9]{24}$/;
+const MIN_WITHDRAWAL_AMOUNT = 500;
+
+function buildBankSnapshot(bank) {
+  const accountDigits = String(bank.accountNumber || '').replace(/\D/g, '');
+  return {
+    accountHolderName: String(bank.accountHolderName || '').trim(),
+    bankName: String(bank.bankName || '').trim(),
+    accountLast4: accountDigits.slice(-4),
+    ifscCode: String(bank.ifscCode || '').trim().toUpperCase(),
+    upiId: String(bank.upiId || '').trim().toLowerCase(),
+  };
+}
+
+/**
+ * When a W-cycle unlocks new trade income and KYC + bank are complete, auto-create a pending withdrawal.
+ * Returns the amount moved into pending (0 if skipped).
+ */
+async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet) {
+  const unlocked = Number(newlyUnlockedTrade) || 0;
+  if (unlocked < MIN_WITHDRAWAL_AMOUNT) return 0;
+
+  const user = await User.findById(userId).lean();
+  if (!user) return 0;
+  if ((user.kyc?.status || 'unverified') !== 'approved') return 0;
+  if (!isBankAccountComplete(user)) return 0;
+
+  const amount = Math.min(unlocked, Number(wallet.balance) || 0);
+  if (amount < MIN_WITHDRAWAL_AMOUNT) return 0;
+
+  const created = await WithdrawalRequest.create({
+    userId,
+    amount,
+    status: 'pending',
+    bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
+  });
+
+  await AuditLog.create({
+    actorUserId: null,
+    action: 'withdrawal_request_auto_created',
+    targetType: 'WithdrawalRequest',
+    targetId: created._id,
+    details: { userId: String(userId), amount, reason: 'trade_cycle_unlock' },
+  });
+
+  return amount;
+}
 
 async function findWithdrawalForAdminReview(requestId) {
   const rid = String(requestId || '').trim();
@@ -17,7 +63,7 @@ async function findWithdrawalForAdminReview(requestId) {
 }
 
 async function createWithdrawalRequest(userId, amount) {
-  await recalculateEligibility(userId);
+  await recalculateEligibility(userId, null, { skipAutoWithdraw: true });
   const wallet = await getWalletOrThrow(userId);
   if (wallet.eligibleToWithdraw < amount) {
     throw new AppError(400, 'Amount exceeds eligible to withdraw');
@@ -28,30 +74,16 @@ async function createWithdrawalRequest(userId, amount) {
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, 'User not found');
   assertKycApproved(user);
-  const bank = user.bankAccount || {};
-  const hasBankAccount = Boolean(
-    String(bank.accountHolderName || '').trim() &&
-      String(bank.bankName || '').trim() &&
-      String(bank.accountNumber || '').trim() &&
-      String(bank.ifscCode || '').trim()
-  );
-  if (!hasBankAccount) {
+  if (!isBankAccountComplete(user)) {
     throw new AppError(400, 'Add your bank account before creating a withdrawal request');
   }
-  const accountDigits = String(bank.accountNumber || '').replace(/\D/g, '');
   const created = await WithdrawalRequest.create({
     userId,
     amount,
     status: 'pending',
-    bankSnapshot: {
-      accountHolderName: String(bank.accountHolderName || '').trim(),
-      bankName: String(bank.bankName || '').trim(),
-      accountLast4: accountDigits.slice(-4),
-      ifscCode: String(bank.ifscCode || '').trim().toUpperCase(),
-      upiId: String(bank.upiId || '').trim().toLowerCase(),
-    },
+    bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
   });
-  await recalculateEligibility(userId);
+  await recalculateEligibility(userId, null, { skipAutoWithdraw: true });
   return created;
 }
 
@@ -88,4 +120,9 @@ async function reviewWithdrawalRequest(adminUserId, requestId, status, reason) {
   return request;
 }
 
-module.exports = { createWithdrawalRequest, reviewWithdrawalRequest };
+module.exports = {
+  MIN_WITHDRAWAL_AMOUNT,
+  tryAutoWithdrawNewTradeIncome,
+  createWithdrawalRequest,
+  reviewWithdrawalRequest,
+};

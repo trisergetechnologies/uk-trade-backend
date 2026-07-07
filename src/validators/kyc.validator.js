@@ -44,10 +44,25 @@ const adminListKycSchema = z.object({
 
 const adminReviewKycSchema = z.object({
   params: z.object({ userCode: z.string().min(3).max(64).transform((s) => String(s).toUpperCase()) }),
-  body: z.object({
-    status: z.enum(['approved', 'rejected']),
-    reason: z.string().trim().min(2).max(2000),
-  }),
+  body: z
+    .object({
+      status: z.enum(['approved', 'rejected']),
+      reason: z.string().trim().max(2000).optional().or(z.literal('')),
+      accountHolderName: z.string().trim().min(2).max(100).optional().or(z.literal('')),
+      bankName: z.string().trim().min(2).max(100).optional().or(z.literal('')),
+      accountNumber: z.string().trim().min(6).max(34).optional().or(z.literal('')),
+      ifscCode: z.string().trim().min(4).max(20).optional().or(z.literal('')),
+      upiId: z.string().trim().min(3).max(100).optional().or(z.literal('')),
+    })
+    .superRefine((data, ctx) => {
+      if (data.status === 'rejected' && (!data.reason || data.reason.trim().length < 2)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A rejection reason is required',
+          path: ['reason'],
+        });
+      }
+    }),
   query: z.object({}).optional(),
 });
 

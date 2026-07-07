@@ -42,6 +42,79 @@ function pickAsset(user, kind) {
   return null;
 }
 
+function isBankAccountComplete(user) {
+  const b = user?.bankAccount || {};
+  return Boolean(
+    String(b.accountHolderName || '').trim() &&
+      String(b.bankName || '').trim() &&
+      String(b.accountNumber || '').trim() &&
+      String(b.ifscCode || '').trim()
+  );
+}
+
+function parseBankInput(bankInput = {}) {
+  if (!bankInput || typeof bankInput !== 'object') return null;
+  const accountHolderName = String(bankInput.accountHolderName || '').trim();
+  const bankName = String(bankInput.bankName || '').trim();
+  const accountNumber = String(bankInput.accountNumber || '').trim();
+  const ifscCode = String(bankInput.ifscCode || '').trim().toUpperCase();
+  const upiId = String(bankInput.upiId || '').trim().toLowerCase();
+  if (!accountHolderName && !bankName && !accountNumber && !ifscCode && !upiId) {
+    return null;
+  }
+  return { accountHolderName, bankName, accountNumber, ifscCode, upiId };
+}
+
+function bankAccountAdminSummary(user) {
+  const b = user?.bankAccount || {};
+  return {
+    accountHolderName: String(b.accountHolderName || ''),
+    bankName: String(b.bankName || ''),
+    accountNumber: String(b.accountNumber || ''),
+    ifscCode: String(b.ifscCode || ''),
+    upiId: String(b.upiId || ''),
+    isComplete: isBankAccountComplete(user),
+  };
+}
+
+function applyBankAccount(user, bankInput) {
+  const parsed = parseBankInput(bankInput);
+  if (!parsed) return false;
+
+  const existing = user.bankAccount || {};
+  user.bankAccount = {
+    accountHolderName: parsed.accountHolderName || String(existing.accountHolderName || '').trim(),
+    bankName: parsed.bankName || String(existing.bankName || '').trim(),
+    accountNumber: parsed.accountNumber || String(existing.accountNumber || '').trim(),
+    ifscCode: parsed.ifscCode || String(existing.ifscCode || '').trim().toUpperCase(),
+    upiId: parsed.upiId || String(existing.upiId || '').trim().toLowerCase(),
+    updatedAtUtc: new Date(),
+  };
+  return true;
+}
+
+function emptyKycAsset() {
+  return { publicId: '', resourceType: 'image', format: 'jpg' };
+}
+
+function ensureKycObject(user) {
+  if (!user.kyc) {
+    user.kyc = {
+      status: 'unverified',
+      aadhaarAsset: emptyKycAsset(),
+      passbookAsset: emptyKycAsset(),
+      aadhaarFrontAsset: emptyKycAsset(),
+      aadhaarBackAsset: emptyKycAsset(),
+      panAsset: emptyKycAsset(),
+      photoAsset: emptyKycAsset(),
+      submittedAt: null,
+      reviewedAt: null,
+      reviewedBy: null,
+      reviewReason: '',
+    };
+  }
+}
+
 async function submitMyKyc(userId, fileMap, bankInput = {}) {
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, 'User not found');
@@ -153,7 +226,7 @@ async function adminListKyc(req) {
 
   const [list, total] = await Promise.all([
     User.find(filter)
-      .select('name email userCode kyc createdAt')
+      .select('name email userCode kyc bankAccount createdAt')
       .sort({ updatedAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -166,23 +239,82 @@ async function adminListKyc(req) {
     name: row.name,
     email: row.email,
     kyc: kycSummary({ kyc: row.kyc }),
+    bankAccount: bankAccountAdminSummary(row),
+    bankComplete: isBankAccountComplete(row),
     createdAt: row.createdAt,
   }));
 
   return { data, meta: metaFor(page, limit, total) };
 }
 
-async function adminReviewKyc(adminUserId, userCode, status, reason) {
+async function adminReviewKyc(adminUserId, userCode, status, reason, bankInput = {}) {
   const code = String(userCode || '').trim().toUpperCase();
   const user = await User.findOne({ userCode: code });
   if (!user) throw new AppError(404, 'User not found');
-  if (user.kyc?.status !== 'pending') {
+
+  const current = user.kyc?.status || 'unverified';
+
+  if (status === 'approved') {
+    if (current === 'approved') {
+      throw new AppError(400, 'KYC is already approved');
+    }
+    if (!['unverified', 'pending'].includes(current)) {
+      throw new AppError(400, 'KYC can only be approved when status is unverified or pending');
+    }
+
+    const bankUpdated = applyBankAccount(user, bankInput);
+    if (!isBankAccountComplete(user)) {
+      throw new AppError(
+        400,
+        'Bank account holder, bank name, account number and IFSC are required to approve KYC'
+      );
+    }
+
+    ensureKycObject(user);
+    const source = current === 'pending' ? 'submission_review' : 'admin_direct';
+    const defaultReason =
+      source === 'admin_direct'
+        ? 'KYC approved by admin without document submission.'
+        : 'Documents verified.';
+    const reviewReason = String(reason || '').trim() || defaultReason;
+
+    user.kyc.status = 'approved';
+    user.kyc.reviewedBy = adminUserId;
+    user.kyc.reviewReason = reviewReason;
+    user.kyc.reviewedAt = new Date();
+    await user.save();
+
+    await AuditLog.create({
+      actorUserId: adminUserId,
+      action: 'kyc_reviewed',
+      targetType: 'User',
+      targetId: user._id,
+      details: { userCode: code, status, reason: reviewReason, source, bankUpdated },
+    });
+
+    return {
+      userCode: user.userCode,
+      name: user.name,
+      email: user.email,
+      kyc: kycSummary(user),
+      bankAccount: bankAccountAdminSummary(user),
+      bankComplete: true,
+    };
+  }
+
+  if (current !== 'pending') {
     throw new AppError(400, 'This user has no pending KYC submission');
   }
 
-  user.kyc.status = status;
+  const reviewReason = String(reason || '').trim();
+  if (!reviewReason || reviewReason.length < 2) {
+    throw new AppError(400, 'A rejection reason is required');
+  }
+
+  ensureKycObject(user);
+  user.kyc.status = 'rejected';
   user.kyc.reviewedBy = adminUserId;
-  user.kyc.reviewReason = reason || '';
+  user.kyc.reviewReason = reviewReason;
   user.kyc.reviewedAt = new Date();
   await user.save();
 
@@ -191,19 +323,23 @@ async function adminReviewKyc(adminUserId, userCode, status, reason) {
     action: 'kyc_reviewed',
     targetType: 'User',
     targetId: user._id,
-    details: { userCode: code, status, reason },
+    details: { userCode: code, status, reason: reviewReason, source: 'submission_review' },
   });
 
-  return { userCode: user.userCode, name: user.name, email: user.email, kyc: kycSummary(user) };
+  return {
+    userCode: user.userCode,
+    name: user.name,
+    email: user.email,
+    kyc: kycSummary(user),
+    bankAccount: bankAccountAdminSummary(user),
+    bankComplete: isBankAccountComplete(user),
+  };
 }
 
 function assertKycApproved(user) {
   const st = user.kyc?.status || 'unverified';
   if (st !== 'approved') {
-    throw new AppError(
-      400,
-      'Complete KYC (Aadhaar and passbook or cheque book upload) and wait for admin approval before withdrawing'
-    );
+    throw new AppError(400, 'Complete KYC and wait for admin approval before withdrawing');
   }
 }
 
@@ -211,6 +347,7 @@ module.exports = {
   KYC_KINDS,
   kycSummary,
   pickAsset,
+  isBankAccountComplete,
   submitMyKyc,
   getMyKyc,
   adminListKyc,
