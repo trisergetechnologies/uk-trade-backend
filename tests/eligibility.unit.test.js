@@ -3,6 +3,7 @@ const {
   firstDayAfterWithdrawalCycleK,
   newlyUnlockedTradeForSubscriptionOnDate,
   computeNewlyUnlockedTradeDelta,
+  resolveTradeAutoWithdrawAmount,
 } = require('../src/services/eligibility.service');
 const { addIstDays } = require('../src/utils/date-utils');
 
@@ -43,6 +44,15 @@ describe('eligibility.engine (unit)', () => {
     expect(computeNewlyUnlockedTradeDelta(55000, 50000)).toBe(5000);
     expect(computeNewlyUnlockedTradeDelta(50000, 55000)).toBe(0);
     expect(computeNewlyUnlockedTradeDelta(100, null)).toBe(0);
+  });
+
+  test('resolveTradeAutoWithdrawAmount — gate day does not re-fire after baseline (hourly recalc fix)', () => {
+    const cycleUnlock = 57500;
+    expect(resolveTradeAutoWithdrawAmount(0, null, 0)).toBe(0);
+    expect(resolveTradeAutoWithdrawAmount(57500, null, cycleUnlock)).toBe(cycleUnlock);
+    expect(resolveTradeAutoWithdrawAmount(57500, 0, cycleUnlock)).toBe(57500);
+    expect(resolveTradeAutoWithdrawAmount(57500, 57500, cycleUnlock)).toBe(0);
+    expect(resolveTradeAutoWithdrawAmount(115000, 57500, 0)).toBe(57500);
   });
 
   test('Plan B (W=31) — daily credits stay locked until full cycle completes on gate day', () => {

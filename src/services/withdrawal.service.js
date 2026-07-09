@@ -107,7 +107,7 @@ async function reviewWithdrawalRequest(adminUserId, requestId, status, reason) {
     });
   }
 
-  await recalculateEligibility(request.userId.toString());
+  await recalculateEligibility(request.userId.toString(), null, { skipAutoWithdraw: true });
 
   await AuditLog.create({
     actorUserId: adminUserId,

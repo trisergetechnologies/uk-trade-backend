@@ -105,23 +105,23 @@ function newlyUnlockedTradeForSubscriptionOnDate(sub, plan, credits, todayIst) {
 }
 
 /**
+ * Pure resolver: after baseline exists, only a tradeGross *increase* triggers auto-withdraw
+ * (once per cycle unlock). Gate-day alone must not re-fire on every hourly recalc.
+ */
+function resolveTradeAutoWithdrawAmount(tradeGross, lastGrossEligibleTrade, gateUnlockToday) {
+  if (lastGrossEligibleTrade != null) {
+    return computeNewlyUnlockedTradeDelta(tradeGross, lastGrossEligibleTrade);
+  }
+  return Math.max(0, Number(gateUnlockToday) || 0);
+}
+
+/**
  * Amount of trade income to auto-move to pending withdrawal on this recalc.
  * Only fires when a full W-cycle completes (lump sum), e.g. all 31 days of Plan B cycle 1 on day 31.
  */
 async function computeTradeAutoWithdrawAmount(userId, todayIst, tradeGross, lastGrossEligibleTrade) {
-  const subs = await PackageSubscription.find({ userId }).populate('planId');
-  let cycleUnlockToday = 0;
-  for (const sub of subs) {
-    const credits = await TradeCreditEvent.find({ packageSubscriptionId: sub._id }).sort({ creditDateIst: 1 });
-    cycleUnlockToday += newlyUnlockedTradeForSubscriptionOnDate(sub, sub.planId, credits, todayIst);
-  }
-  if (cycleUnlockToday > 0) return cycleUnlockToday;
-
-  // Catch-up if the gate day was missed (server down) — still a full-cycle jump, not daily.
-  if (lastGrossEligibleTrade != null) {
-    return computeNewlyUnlockedTradeDelta(tradeGross, lastGrossEligibleTrade);
-  }
-  return 0;
+  const gateUnlockToday = await computeNewlyUnlockedTradeOnDate(userId, todayIst);
+  return resolveTradeAutoWithdrawAmount(tradeGross, lastGrossEligibleTrade, gateUnlockToday);
 }
 
 async function computeNewlyUnlockedTradeOnDate(userId, todayIst) {
@@ -174,17 +174,17 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
   return getWalletOrThrow(userId);
 }
 
-async function recalculateEligibilityForUsers(userIdSet, todayIst = null) {
+async function recalculateEligibilityForUsers(userIdSet, todayIst = null, options = {}) {
   const today = todayIst || toIstDateParts(new Date()).isoDate;
   for (const uid of userIdSet) {
-    await recalculateEligibility(uid.toString(), today);
+    await recalculateEligibility(uid.toString(), today, options);
   }
 }
 
 /** After a trade job day, refresh everyone who has ever held a package (calendar-only unlocks). */
-async function recalculateEligibilityForAllPortfolioUsers(todayIst) {
+async function recalculateEligibilityForAllPortfolioUsers(todayIst, options = {}) {
   const ids = await PackageSubscription.distinct('userId');
-  await recalculateEligibilityForUsers(new Set(ids.map(String)), todayIst);
+  await recalculateEligibilityForUsers(new Set(ids.map(String)), todayIst, options);
 }
 
 module.exports = {
@@ -194,6 +194,7 @@ module.exports = {
   newlyUnlockedTradeForSubscriptionOnDate,
   computeNewlyUnlockedTradeOnDate,
   computeNewlyUnlockedTradeDelta,
+  resolveTradeAutoWithdrawAmount,
   computeTradeAutoWithdrawAmount,
   computeTotalSponsorCredited,
   recalculateEligibility,

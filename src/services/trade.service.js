@@ -64,7 +64,6 @@ async function runDailyTradeCredits(forIstDate = null) {
 
   const alreadyDone = await TradeJobRun.findOne({ dayIst: todayIst, finished: true });
   if (alreadyDone) {
-    await recalculateEligibilityForAllPortfolioUsers(todayIst);
     return { date: todayIst, skipped: true, reason: 'trade_job_already_finished', processed: alreadyDone.processed };
   }
 
