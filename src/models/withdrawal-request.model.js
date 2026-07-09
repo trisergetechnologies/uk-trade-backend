@@ -6,6 +6,12 @@ const withdrawalRequestSchema = new mongoose.Schema(
     publicId: { type: String, required: true, unique: true, index: true, default: () => createPublicId('WD') },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     amount: { type: Number, required: true },
+    tdsPercent: { type: Number, default: 5 },
+    handlingPercent: { type: Number, default: 5 },
+    tdsAmount: { type: Number, default: 0 },
+    handlingAmount: { type: Number, default: 0 },
+    /** Amount admin pays to user after TDS + handling (gross − deductions). */
+    netPayable: { type: Number, default: 0 },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reviewReason: { type: String, default: '' },

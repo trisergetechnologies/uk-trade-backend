@@ -2,6 +2,7 @@ const { WithdrawalRequest, AuditLog, User } = require('../models');
 const { getWalletOrThrow, debitWallet } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
 const { assertKycApproved, isBankAccountComplete } = require('./kyc.service');
+const { computeWithdrawalDeductions } = require('../utils/withdrawal-deductions');
 const { AppError } = require('../utils/errors');
 
 const OBJECT_ID_HEX = /^[a-fA-F0-9]{24}$/;
@@ -16,6 +17,10 @@ function buildBankSnapshot(bank) {
     ifscCode: String(bank.ifscCode || '').trim().toUpperCase(),
     upiId: String(bank.upiId || '').trim().toLowerCase(),
   };
+}
+
+function withdrawalDeductionFields(grossAmount) {
+  return computeWithdrawalDeductions(grossAmount);
 }
 
 /**
@@ -34,9 +39,11 @@ async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet)
   const amount = Math.min(unlocked, Number(wallet.balance) || 0);
   if (amount < MIN_WITHDRAWAL_AMOUNT) return 0;
 
+  const deductions = withdrawalDeductionFields(amount);
   const created = await WithdrawalRequest.create({
     userId,
     amount,
+    ...deductions,
     status: 'pending',
     bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
   });
@@ -46,7 +53,14 @@ async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet)
     action: 'withdrawal_request_auto_created',
     targetType: 'WithdrawalRequest',
     targetId: created._id,
-    details: { userId: String(userId), amount, reason: 'trade_cycle_unlock' },
+    details: {
+      userId: String(userId),
+      amount,
+      netPayable: deductions.netPayable,
+      tdsAmount: deductions.tdsAmount,
+      handlingAmount: deductions.handlingAmount,
+      reason: 'trade_cycle_unlock',
+    },
   });
 
   return amount;
@@ -77,9 +91,11 @@ async function createWithdrawalRequest(userId, amount) {
   if (!isBankAccountComplete(user)) {
     throw new AppError(400, 'Add your bank account before creating a withdrawal request');
   }
+  const deductions = withdrawalDeductionFields(amount);
   const created = await WithdrawalRequest.create({
     userId,
     amount,
+    ...deductions,
     status: 'pending',
     bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
   });
@@ -114,7 +130,14 @@ async function reviewWithdrawalRequest(adminUserId, requestId, status, reason) {
     action: 'withdrawal_request_reviewed',
     targetType: 'WithdrawalRequest',
     targetId: request._id,
-    details: { status, reason, amount: request.amount },
+    details: {
+      status,
+      reason,
+      amount: request.amount,
+      netPayable: request.netPayable,
+      tdsAmount: request.tdsAmount,
+      handlingAmount: request.handlingAmount,
+    },
   });
 
   return request;
