@@ -18,6 +18,8 @@ const withdrawalRequestSchema = new mongoose.Schema(
     bankSnapshot: {
       accountHolderName: { type: String, default: '' },
       bankName: { type: String, default: '' },
+      /** Full account number at request time (admin payout only; omitted from user APIs). */
+      accountNumber: { type: String, default: '' },
       accountLast4: { type: String, default: '' },
       ifscCode: { type: String, default: '' },
       upiId: { type: String, default: '' },

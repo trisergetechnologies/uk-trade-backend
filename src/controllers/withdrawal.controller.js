@@ -5,10 +5,19 @@ const { parsePagination, metaFor } = require('../utils/pagination');
 
 const WITHDRAWAL_STATUSES = new Set(['pending', 'approved', 'rejected']);
 
+function redactWithdrawalBankSnapshot(doc) {
+  const row = doc?.toObject ? doc.toObject() : { ...doc };
+  if (row.bankSnapshot && typeof row.bankSnapshot === 'object') {
+    const { accountNumber, ...rest } = row.bankSnapshot;
+    row.bankSnapshot = rest;
+  }
+  return row;
+}
+
 async function requestWithdrawal(req, res, next) {
   try {
     const result = await createWithdrawalRequest(req.user.sub, req.validated.body.amount);
-    res.status(201).json({ success: true, data: result });
+    res.status(201).json({ success: true, data: redactWithdrawalBankSnapshot(result) });
   } catch (error) {
     next(error);
   }
@@ -39,7 +48,11 @@ async function listMyWithdrawals(req, res, next) {
       WithdrawalRequest.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
       WithdrawalRequest.countDocuments(filter),
     ]);
-    res.json({ success: true, data: list, meta: metaFor(page, limit, total) });
+    res.json({
+      success: true,
+      data: list.map(redactWithdrawalBankSnapshot),
+      meta: metaFor(page, limit, total),
+    });
   } catch (error) {
     next(error);
   }
@@ -71,7 +84,7 @@ async function adminListWithdrawals(req, res, next) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate('userId', 'name email userCode'),
+        .populate('userId', 'name email userCode bankAccount'),
       WithdrawalRequest.countDocuments(filter),
     ]);
     res.json({ success: true, data: list, meta: metaFor(page, limit, total) });

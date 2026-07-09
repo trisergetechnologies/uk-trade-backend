@@ -13,6 +13,7 @@ function buildBankSnapshot(bank) {
   return {
     accountHolderName: String(bank.accountHolderName || '').trim(),
     bankName: String(bank.bankName || '').trim(),
+    accountNumber: accountDigits,
     accountLast4: accountDigits.slice(-4),
     ifscCode: String(bank.ifscCode || '').trim().toUpperCase(),
     upiId: String(bank.upiId || '').trim().toLowerCase(),
