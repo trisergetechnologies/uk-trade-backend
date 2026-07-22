@@ -14,7 +14,9 @@ const registerSchema = z.object({
     password: z.string().min(6),
     mobileNumber: mobileNumberSchema,
     referralCode: z.string().min(3),
-    community: z.enum(['left', 'right']),
+    // Optional: only set when the referral link explicitly specifies a side.
+    // When omitted, placement follows the sponsor's preferredCommunity.
+    community: z.enum(['left', 'right']).optional(),
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional(),

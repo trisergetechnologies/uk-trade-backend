@@ -48,6 +48,13 @@ async function registerUser(input) {
   const referralCode = await generateUniqueReferralCode();
   const userCode = await generateUniqueUserCode();
 
+  // Placement side priority:
+  //   1. explicit `community` from the referral link (?community=left|right)
+  //   2. the sponsor's preferredCommunity (so a sponsor controls which leg their people land in)
+  //   3. 'left' as a final fallback
+  const placementCommunity =
+    input.community || referredByUser.preferredCommunity || 'left';
+
   const user = await User.create({
     name: input.name,
     email: input.email.toLowerCase(),
@@ -57,12 +64,12 @@ async function registerUser(input) {
     userCode,
     referralCode,
     referredBy: referredByUser._id,
-    preferredCommunity: input.community,
+    preferredCommunity: placementCommunity,
     role: ROLES.USER,
   });
 
   await Wallet.create({ userId: user._id, balance: 0, eligibleToWithdraw: 0 });
-  await placeUserInTree(user._id, input.community);
+  await placeUserInTree(user._id, placementCommunity);
   await User.updateOne({ _id: user._id }, { $set: { treePlacedAt: new Date() } });
 
   return { user, token: signToken(user) };
