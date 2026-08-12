@@ -6,6 +6,7 @@ const packageSubscriptionSchema = new mongoose.Schema(
     publicId: { type: String, required: true, unique: true, index: true, default: () => createPublicId('SUB') },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', required: true },
+    packageProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageProduct', default: null, index: true },
     principalAmount: { type: Number, required: true },
     purchaseDateIst: { type: String, required: true },
     purchaseAtUtc: { type: Date, required: true, default: Date.now },

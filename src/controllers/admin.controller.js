@@ -14,6 +14,7 @@ const {
   adminCreditUserWallet,
   listCommunityUsers,
   getCommunityTotals,
+  listTransactionLogs,
 } = require('../services/admin.service');
 const { purchasePackage } = require('../services/trade.service');
 const { recalculateEligibility } = require('../services/eligibility.service');
@@ -113,6 +114,24 @@ async function adminListAuditLogs(req, res, next) {
       to: String(req.query.to || '').trim(),
     };
     const { rows, total } = await listAuditLogs(payload);
+    res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function adminListTransactionLogs(req, res, next) {
+  try {
+    const { page, limit } = parsePagination(req);
+    const payload = {
+      page,
+      limit,
+      type: String(req.query.type || 'all').trim().toLowerCase(),
+      q: String(req.query.q || '').trim(),
+      from: String(req.query.from || '').trim(),
+      to: String(req.query.to || '').trim(),
+    };
+    const { rows, total } = await listTransactionLogs(payload);
     res.json({ success: true, data: rows, meta: metaFor(page, limit, total) });
   } catch (error) {
     next(error);
@@ -372,6 +391,7 @@ module.exports = {
   adminUserTeamTreeChildren,
   adminUserTeamFocus,
   adminListAuditLogs,
+  adminListTransactionLogs,
   adminGetPaymentProof,
   adminListPlans,
   adminCreatePlan,

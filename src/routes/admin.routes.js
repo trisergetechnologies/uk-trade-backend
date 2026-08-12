@@ -8,6 +8,7 @@ const {
   adminGetUserWalletLedger,
   adminLookupUser,
   adminListAuditLogs,
+  adminListTransactionLogs,
   adminListUsers,
   adminListUsersPasswords,
   adminOverview,
@@ -39,6 +40,7 @@ const {
   adminUserTeamTreeChildrenSchema,
   adminUserTeamFocusSchema,
   adminUserWalletLedgerSchema,
+  adminListTransactionLogsSchema,
   adminCreatePlanSchema,
   adminCreatePackageSchema,
   adminPatchPlanSchema,
@@ -74,6 +76,7 @@ router.post('/users/:userCode/purchase', validate(adminPurchaseOnBehalfSchema), 
 router.get('/users/:userCode', validate(adminUserCodeParamSchema), adminGetUser);
 router.patch('/users/:userCode/status', validate(adminSetUserStatusSchema), adminSetUserStatus);
 router.get('/audit-logs', adminListAuditLogs);
+router.get('/transaction-logs', validate(adminListTransactionLogsSchema), adminListTransactionLogs);
 router.get('/media/payment-proof/:id', validate(adminMediaPaymentProofSchema), adminGetPaymentProof);
 router.get('/kyc', validate(adminListKycSchema), adminKycList);
 router.patch('/kyc/:userCode/review', validate(adminReviewKycSchema), adminKycReview);

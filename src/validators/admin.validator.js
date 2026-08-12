@@ -194,6 +194,19 @@ const adminUserWalletLedgerSchema = z.object({
   body: z.object({}).optional(),
 });
 
+const adminListTransactionLogsSchema = z.object({
+  params: z.object({}).optional(),
+  body: z.object({}).optional(),
+  query: z.object({
+    page: z.string().optional(),
+    limit: z.string().optional(),
+    type: z.enum(['all', 'wallet_credit', 'package_purchase', 'fund_request_approval']).optional(),
+    q: z.string().max(120).optional(),
+    from: z.string().max(10).optional(),
+    to: z.string().max(10).optional(),
+  }),
+});
+
 module.exports = {
   adminUserCodeParamSchema,
   adminSetUserStatusSchema,
@@ -210,4 +223,5 @@ module.exports = {
   adminUserTeamTreeChildrenSchema,
   adminUserTeamFocusSchema,
   adminUserWalletLedgerSchema,
+  adminListTransactionLogsSchema,
 };

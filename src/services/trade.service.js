@@ -40,6 +40,7 @@ async function purchasePackage({ userId, planCode, packageCode }) {
   return PackageSubscription.create({
     userId,
     planId: plan._id,
+    packageProductId: product._id,
     principalAmount: amount,
     purchaseDateIst,
     purchaseAtUtc: now,

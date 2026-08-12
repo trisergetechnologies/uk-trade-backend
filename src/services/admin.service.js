@@ -15,6 +15,7 @@ const {
   WalletLedger,
   WithdrawalRequest,
 } = require('../models');
+const { ROLES } = require('../constants/roles');
 const { AppError } = require('../utils/errors');
 const { decryptPassword } = require('../utils/password-cipher');
 const { getWalletOrThrow, addLedgerEntry, reconcileEligibleBonusFromLedger } = require('./wallet.service');
@@ -484,6 +485,156 @@ async function listCommunityUsers({ community, page, limit, q }) {
   return { rows: rows.slice(skip, skip + limit), total };
 }
 
+function buildTransactionDateFilter(from, to) {
+  if (!from && !to) return null;
+  const filter = {};
+  if (from) filter.$gte = new Date(`${from}T00:00:00.000Z`);
+  if (to) filter.$lte = new Date(`${to}T23:59:59.999Z`);
+  return filter;
+}
+
+function matchesTransactionSearch(row, term) {
+  const haystack = [
+    row.customerName,
+    row.customerUserCode,
+    row.planName,
+    row.planCode,
+    row.packageName,
+    row.packageCode,
+    row.adminName,
+    row.adminUserCode,
+    row.note,
+  ];
+  return haystack.some((value) => String(value || '').toLowerCase().includes(term));
+}
+
+async function listTransactionLogs({ page, limit, type = 'all', q = '', from = '', to = '' }) {
+  const normalizedType = String(type || 'all').trim().toLowerCase();
+  const includeWalletCredits = normalizedType === 'all' || normalizedType === 'wallet_credit';
+  const includePackagePurchases = normalizedType === 'all' || normalizedType === 'package_purchase';
+  const includeFundDeposits = normalizedType === 'all' || normalizedType === 'fund_request_approval';
+  const dateFilter = buildTransactionDateFilter(from, to);
+  const term = String(q || '').trim().toLowerCase();
+  const rows = [];
+
+  if (includeWalletCredits) {
+    const adminIds = await User.find({ role: ROLES.ADMIN }).distinct('_id');
+    const transferFilter = { fromUserId: { $in: adminIds } };
+    if (dateFilter) transferFilter.createdAt = dateFilter;
+
+    const transfers = await FundTransfer.find(transferFilter)
+      .sort({ createdAt: -1 })
+      .populate('toUserId', 'name userCode')
+      .populate('fromUserId', 'name userCode')
+      .lean();
+
+    for (const transfer of transfers) {
+      rows.push({
+        id: transfer.publicId,
+        type: 'wallet_credit',
+        dateTime: transfer.createdAt,
+        customerName: transfer.toUserId?.name || '',
+        customerUserCode: transfer.toUserId?.userCode || transfer.toUserCode || '',
+        amount: transfer.amount,
+        note: transfer.note || '',
+        adminName: transfer.fromUserId?.name || '',
+        adminUserCode: transfer.fromUserId?.userCode || transfer.fromUserCode || '',
+        planName: null,
+        planCode: null,
+        packageName: null,
+        packageCode: null,
+      });
+    }
+  }
+
+  if (includePackagePurchases) {
+    const subscriptionFilter = {};
+    if (dateFilter) subscriptionFilter.purchaseAtUtc = dateFilter;
+
+    const [subscriptions, products] = await Promise.all([
+      PackageSubscription.find(subscriptionFilter)
+        .sort({ purchaseAtUtc: -1 })
+        .populate('userId', 'name userCode')
+        .populate('planId', 'code name')
+        .populate('packageProductId', 'code name')
+        .lean(),
+      PackageProduct.find({}).select('code name amount').lean(),
+    ]);
+
+    const productByAmount = new Map();
+    for (const product of products) {
+      if (!productByAmount.has(product.amount)) productByAmount.set(product.amount, product);
+    }
+
+    for (const subscription of subscriptions) {
+      let pkg = subscription.packageProductId;
+      if (!pkg && subscription.principalAmount != null) {
+        pkg = productByAmount.get(subscription.principalAmount) || null;
+      }
+
+      rows.push({
+        id: subscription.publicId,
+        type: 'package_purchase',
+        dateTime: subscription.purchaseAtUtc || subscription.createdAt,
+        customerName: subscription.userId?.name || '',
+        customerUserCode: subscription.userId?.userCode || '',
+        amount: subscription.principalAmount,
+        note: '',
+        adminName: null,
+        adminUserCode: null,
+        planName: subscription.planId?.name || '',
+        planCode: subscription.planId?.code || '',
+        packageName: pkg?.name || '',
+        packageCode: pkg?.code || '',
+      });
+    }
+  }
+
+  if (includeFundDeposits) {
+    const depositFilter = { status: 'approved' };
+    if (dateFilter) depositFilter.updatedAt = dateFilter;
+
+    const deposits = await PaymentRequest.find(depositFilter)
+      .sort({ updatedAt: -1 })
+      .populate('userId', 'name userCode')
+      .populate('reviewedBy', 'name userCode')
+      .lean();
+
+    for (const deposit of deposits) {
+      const approvedAmount = deposit.approvedAmount ?? deposit.requestedAmount;
+      const noteParts = [];
+      if (deposit.reviewReason) noteParts.push(deposit.reviewReason);
+      if (deposit.notes) noteParts.push(deposit.notes);
+      if (deposit.requestedAmount != null && approvedAmount !== deposit.requestedAmount) {
+        noteParts.push(`Requested ${deposit.requestedAmount}, approved ${approvedAmount}`);
+      }
+
+      rows.push({
+        id: deposit.publicId,
+        type: 'fund_request_approval',
+        dateTime: deposit.updatedAt || deposit.createdAt,
+        customerName: deposit.userId?.name || '',
+        customerUserCode: deposit.userId?.userCode || '',
+        amount: approvedAmount,
+        requestedAmount: deposit.requestedAmount,
+        note: noteParts.join(' · ') || 'Fund deposit approved',
+        adminName: deposit.reviewedBy?.name || '',
+        adminUserCode: deposit.reviewedBy?.userCode || '',
+        planName: null,
+        planCode: null,
+        packageName: null,
+        packageCode: null,
+      });
+    }
+  }
+
+  const filtered = term ? rows.filter((row) => matchesTransactionSearch(row, term)) : rows;
+  filtered.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+  const total = filtered.length;
+  const skip = (page - 1) * limit;
+  return { rows: filtered.slice(skip, skip + limit), total };
+}
+
 async function listAuditLogs({ page, limit, action, targetType, actorUserCode, from, to }) {
   const filter = {};
   if (action) filter.action = action;
@@ -517,4 +668,5 @@ module.exports = {
   listCommunityUsers,
   getCommunityTotals,
   listAuditLogs,
+  listTransactionLogs,
 };
