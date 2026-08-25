@@ -97,6 +97,34 @@ describe('eligibility.engine (unit)', () => {
       })
     ).toBe(0);
 
+    const { computeAvailableIncomeStreams } = require('../src/services/eligibility.service');
+    expect(
+      computeAvailableIncomeStreams({
+        tradeGross: 0,
+        sponsorGross: 8640,
+        matchingGross: 13680,
+        bonus: 8760,
+        matchingPaidByAdmin: 8760,
+        approved: 15690,
+        pending: 0,
+      })
+    ).toEqual({ sponsorAvailable: 1710, matchingAvailable: 4920 });
+
+    expect(
+      computeAvailableIncomeStreams({
+        sponsorGross: 1000,
+        matchingGross: 500,
+      })
+    ).toEqual({ sponsorAvailable: 1000, matchingAvailable: 500 });
+
+    expect(
+      computeAvailableIncomeStreams({
+        sponsorGross: 1000,
+        matchingGross: 500,
+        approved: 1500,
+      })
+    ).toEqual({ sponsorAvailable: 0, matchingAvailable: 0 });
+
     expect(matchingPaidByAdminForUserCode('88531')).toBe(8760);
     expect(matchingPaidByAdminForUserCode('99999')).toBe(0);
     expect(resolveMatchingPaidByAdmin({ matchingPaidByAdmin: 0 }, '88531')).toBe(8760);

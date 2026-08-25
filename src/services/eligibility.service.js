@@ -99,6 +99,38 @@ function computeNetEligibleToWithdraw({
   return Math.max(0, roundMoney(net));
 }
 
+/**
+ * Remaining sponsor/matching still sitting in Eligible after withdrawals.
+ * Withdrawals consume unlocked trade first (auto-withdraw), then leftover admin bonus,
+ * then sponsor, then matching — so leftover matching is not shown as still-available sponsor.
+ */
+function computeAvailableIncomeStreams({
+  tradeGross = 0,
+  sponsorGross = 0,
+  matchingGross = 0,
+  bonus = 0,
+  matchingPaidByAdmin = 0,
+  approved = 0,
+  pending = 0,
+} = {}) {
+  const matchingNet = Math.max(0, Number(matchingGross || 0) - Number(matchingPaidByAdmin || 0));
+  let remainingWithdrawn = Number(approved || 0) + Number(pending || 0);
+
+  const take = (amount) => {
+    const avail = Math.max(0, Number(amount) || 0);
+    const used = Math.min(avail, remainingWithdrawn);
+    remainingWithdrawn -= used;
+    return roundMoney(avail - used);
+  };
+
+  take(tradeGross);
+  take(bonus);
+  return {
+    sponsorAvailable: take(sponsorGross),
+    matchingAvailable: take(matchingNet),
+  };
+}
+
 function resolveMatchingPaidByAdmin(wallet, userCode) {
   const stored = Number(wallet?.matchingPaidByAdmin);
   if (Number.isFinite(stored) && stored > 0) return stored;
@@ -126,6 +158,15 @@ async function previewEligibility(userId, todayIst = null) {
     pending,
   });
   const currentEligible = roundMoney(wallet.eligibleToWithdraw);
+  const available = computeAvailableIncomeStreams({
+    tradeGross,
+    sponsorGross,
+    matchingGross,
+    bonus,
+    matchingPaidByAdmin,
+    approved,
+    pending,
+  });
   return {
     userCode: user?.userCode || '',
     tradeGross: roundMoney(tradeGross),
@@ -135,6 +176,8 @@ async function previewEligibility(userId, todayIst = null) {
     matchingPaidByAdmin: roundMoney(matchingPaidByAdmin),
     approved: roundMoney(approved),
     pending: roundMoney(pending),
+    sponsorAvailable: available.sponsorAvailable,
+    matchingAvailable: available.matchingAvailable,
     currentEligible,
     proposedEligible,
     currentBalance: roundMoney(wallet.balance),
@@ -292,6 +335,7 @@ module.exports = {
   computeTotalSponsorCredited,
   computeTotalMatchingCredited,
   computeNetEligibleToWithdraw,
+  computeAvailableIncomeStreams,
   resolveMatchingPaidByAdmin,
   previewEligibility,
   recalculateEligibility,
