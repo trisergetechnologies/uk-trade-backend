@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 const { addIstDays, toIstDateParts, istDateCompare } = require('../utils/date-utils');
-const { PackageSubscription, TradeCreditEvent, WithdrawalRequest, Wallet, SponsorIncomeEvent } = require('../models');
+const { PackageSubscription, TradeCreditEvent, WithdrawalRequest, Wallet, SponsorIncomeEvent, MatchingIncomeEvent, User } = require('../models');
 const { getWalletOrThrow, reconcileEligibleBonusFromLedger } = require('./wallet.service');
+const { matchingPaidByAdminForUserCode } = require('../constants/matching-paid-by-admin');
 
 function firstDayAfterWithdrawalCycleK(withdrawalDay1Ist, W, cycleK) {
   return addIstDays(withdrawalDay1Ist, cycleK * W);
@@ -58,6 +59,87 @@ async function computeTotalSponsorCredited(userId) {
     { $group: { _id: null, t: { $sum: '$creditedAmount' } } },
   ]);
   return Number(rows[0]?.t || 0);
+}
+
+/** Matching income credited to the wallet is always fully withdrawable (no W-cycle gates), same as sponsor. */
+async function computeTotalMatchingCredited(userId) {
+  const uid = new mongoose.Types.ObjectId(userId);
+  const rows = await MatchingIncomeEvent.aggregate([
+    { $match: { earnerUserId: uid, status: 'credited' } },
+    { $group: { _id: null, t: { $sum: '$payoutCreditedAmount' } } },
+  ]);
+  return Number(rows[0]?.t || 0);
+}
+
+function roundMoney(value) {
+  return Number(Number(value || 0).toFixed(2));
+}
+
+/**
+ * Eligible = unlocked trade + sponsor + matching + leftover admin bonus
+ *          − matching already paid via admin workaround − approved − pending.
+ */
+function computeNetEligibleToWithdraw({
+  tradeGross = 0,
+  sponsorGross = 0,
+  matchingGross = 0,
+  bonus = 0,
+  matchingPaidByAdmin = 0,
+  approved = 0,
+  pending = 0,
+} = {}) {
+  const net =
+    Number(tradeGross || 0) +
+    Number(sponsorGross || 0) +
+    Number(matchingGross || 0) +
+    Number(bonus || 0) -
+    Number(matchingPaidByAdmin || 0) -
+    Number(approved || 0) -
+    Number(pending || 0);
+  return Math.max(0, roundMoney(net));
+}
+
+function resolveMatchingPaidByAdmin(wallet, userCode) {
+  const stored = Number(wallet?.matchingPaidByAdmin);
+  if (Number.isFinite(stored) && stored > 0) return stored;
+  return matchingPaidByAdminForUserCode(userCode);
+}
+
+async function previewEligibility(userId, todayIst = null) {
+  const today = todayIst || toIstDateParts(new Date()).isoDate;
+  const wallet = await getWalletOrThrow(userId);
+  const user = await User.findById(userId).select('userCode').lean();
+  const tradeGross = await computeGrossEligibleTrade(userId, today);
+  const sponsorGross = await computeTotalSponsorCredited(userId);
+  const matchingGross = await computeTotalMatchingCredited(userId);
+  const approved = await sumWithdrawalsByStatus(userId, 'approved');
+  const pending = await sumWithdrawalsByStatus(userId, 'pending');
+  const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
+  const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
+  const proposedEligible = computeNetEligibleToWithdraw({
+    tradeGross,
+    sponsorGross,
+    matchingGross,
+    bonus,
+    matchingPaidByAdmin,
+    approved,
+    pending,
+  });
+  const currentEligible = roundMoney(wallet.eligibleToWithdraw);
+  return {
+    userCode: user?.userCode || '',
+    tradeGross: roundMoney(tradeGross),
+    sponsorGross: roundMoney(sponsorGross),
+    matchingGross: roundMoney(matchingGross),
+    bonus: roundMoney(bonus),
+    matchingPaidByAdmin: roundMoney(matchingPaidByAdmin),
+    approved: roundMoney(approved),
+    pending: roundMoney(pending),
+    currentEligible,
+    proposedEligible,
+    currentBalance: roundMoney(wallet.balance),
+    delta: roundMoney(proposedEligible - currentEligible),
+  };
 }
 
 async function sumWithdrawalsByStatus(userId, status) {
@@ -148,9 +230,12 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
   const wallet = await getWalletOrThrow(userId);
   const tradeGross = await computeGrossEligibleTrade(userId, today);
   const sponsorGross = await computeTotalSponsorCredited(userId);
+  const matchingGross = await computeTotalMatchingCredited(userId);
   const approved = await sumWithdrawalsByStatus(userId, 'approved');
   let pending = await sumWithdrawalsByStatus(userId, 'pending');
   const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
+  const user = await User.findById(userId).select('userCode').lean();
+  const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
 
   const hasTradeBaseline = wallet.lastGrossEligibleTrade != null;
   let newlyUnlockedTrade = await computeTradeAutoWithdrawAmount(
@@ -166,7 +251,15 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
     if (autoPending > 0) pending += autoPending;
   }
 
-  const net = Math.max(0, tradeGross + sponsorGross + bonus - approved - pending);
+  const net = computeNetEligibleToWithdraw({
+    tradeGross,
+    sponsorGross,
+    matchingGross,
+    bonus,
+    matchingPaidByAdmin,
+    approved,
+    pending,
+  });
   await Wallet.updateOne(
     { userId },
     { $set: { eligibleToWithdraw: net, lastGrossEligibleTrade: tradeGross } }
@@ -197,6 +290,10 @@ module.exports = {
   resolveTradeAutoWithdrawAmount,
   computeTradeAutoWithdrawAmount,
   computeTotalSponsorCredited,
+  computeTotalMatchingCredited,
+  computeNetEligibleToWithdraw,
+  resolveMatchingPaidByAdmin,
+  previewEligibility,
   recalculateEligibility,
   recalculateEligibilityForUsers,
   recalculateEligibilityForAllPortfolioUsers,

@@ -304,6 +304,8 @@ async function createEventAndMaybeCredit({
       },
       createdAt: asOfUtc,
     });
+    const { recalculateEligibility } = require('./eligibility.service');
+    await recalculateEligibility(earnerUser._id.toString(), null, { skipAutoWithdraw: true });
   }
 
   return { status, event };

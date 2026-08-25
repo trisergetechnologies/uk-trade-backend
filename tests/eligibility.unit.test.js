@@ -55,6 +55,54 @@ describe('eligibility.engine (unit)', () => {
     expect(resolveTradeAutoWithdrawAmount(115000, 57500, 0)).toBe(57500);
   });
 
+  test('computeNetEligibleToWithdraw adds matching like sponsor and subtracts matchingPaidByAdmin', () => {
+    const { computeNetEligibleToWithdraw, resolveMatchingPaidByAdmin } = require('../src/services/eligibility.service');
+    const { matchingPaidByAdminForUserCode } = require('../src/constants/matching-paid-by-admin');
+
+    expect(computeNetEligibleToWithdraw({ matchingGross: 4000 })).toBe(4000);
+
+    expect(
+      computeNetEligibleToWithdraw({
+        tradeGross: 0,
+        sponsorGross: 8640,
+        matchingGross: 13680,
+        bonus: 8760,
+        matchingPaidByAdmin: 8760,
+        approved: 15690,
+        pending: 0,
+      })
+    ).toBe(6630);
+
+    expect(
+      computeNetEligibleToWithdraw({
+        tradeGross: 0,
+        sponsorGross: 0,
+        matchingGross: 5200,
+        bonus: 5200,
+        matchingPaidByAdmin: 5200,
+        approved: 5200,
+        pending: 0,
+      })
+    ).toBe(0);
+
+    expect(
+      computeNetEligibleToWithdraw({
+        tradeGross: 0,
+        sponsorGross: 0,
+        matchingGross: 1200,
+        bonus: 2550,
+        matchingPaidByAdmin: 2550,
+        approved: 2550,
+        pending: 0,
+      })
+    ).toBe(0);
+
+    expect(matchingPaidByAdminForUserCode('88531')).toBe(8760);
+    expect(matchingPaidByAdminForUserCode('99999')).toBe(0);
+    expect(resolveMatchingPaidByAdmin({ matchingPaidByAdmin: 0 }, '88531')).toBe(8760);
+    expect(resolveMatchingPaidByAdmin({ matchingPaidByAdmin: 8760 }, '88531')).toBe(8760);
+  });
+
   test('Plan B (W=31) — daily credits stay locked until full cycle completes on gate day', () => {
     const planB = { cycleDaysW: 31 };
     const D0 = '2026-06-01';
