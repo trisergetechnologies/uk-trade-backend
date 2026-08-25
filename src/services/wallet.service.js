@@ -186,6 +186,7 @@ module.exports = {
   computeEligibleBonusFromLedgerEntries,
   reconcileEligibleBonusFromLedger,
   computeSpendableForPackagesFromTotals,
+  sumTradeIncomeCredited,
   getSpendableForPackages,
   assertSpendableForPackagePurchase,
 };
