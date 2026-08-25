@@ -1,7 +1,7 @@
 const { WithdrawalRequest, AuditLog, User } = require('../models');
 const { getWalletOrThrow, debitWallet } = require('./wallet.service');
 const { recalculateEligibility } = require('./eligibility.service');
-const { assertKycApproved, isBankAccountComplete } = require('./kyc.service');
+const { isBankAccountComplete } = require('./kyc.service');
 const { computeWithdrawalDeductions } = require('../utils/withdrawal-deductions');
 const { AppError } = require('../utils/errors');
 
@@ -25,7 +25,9 @@ function withdrawalDeductionFields(grossAmount) {
 }
 
 /**
- * When a W-cycle unlocks new trade income and KYC + bank are complete, auto-create a pending withdrawal.
+ * When a W-cycle unlocks new trade income, auto-create a pending withdrawal.
+ * KYC is not required — admin can collect / confirm account details when paying.
+ * Bank on file is preferred (snapshotted when present) but not required to create the request.
  * Returns the amount moved into pending (0 if skipped).
  */
 async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet) {
@@ -34,19 +36,20 @@ async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet)
 
   const user = await User.findById(userId).lean();
   if (!user) return 0;
-  if ((user.kyc?.status || 'unverified') !== 'approved') return 0;
-  if (!isBankAccountComplete(user)) return 0;
 
   const amount = Math.min(unlocked, Number(wallet.balance) || 0);
   if (amount < MIN_WITHDRAWAL_AMOUNT) return 0;
 
   const deductions = withdrawalDeductionFields(amount);
+  const bankSnapshot = isBankAccountComplete(user)
+    ? buildBankSnapshot(user.bankAccount || {})
+    : buildBankSnapshot({});
   const created = await WithdrawalRequest.create({
     userId,
     amount,
     ...deductions,
     status: 'pending',
-    bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
+    bankSnapshot,
   });
 
   await AuditLog.create({
@@ -61,6 +64,7 @@ async function tryAutoWithdrawNewTradeIncome(userId, newlyUnlockedTrade, wallet)
       tdsAmount: deductions.tdsAmount,
       handlingAmount: deductions.handlingAmount,
       reason: 'trade_cycle_unlock',
+      bankOnFile: isBankAccountComplete(user),
     },
   });
 
@@ -88,17 +92,17 @@ async function createWithdrawalRequest(userId, amount) {
   }
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, 'User not found');
-  assertKycApproved(user);
-  if (!isBankAccountComplete(user)) {
-    throw new AppError(400, 'Add your bank account before creating a withdrawal request');
-  }
+  // KYC is optional — admin may collect account details separately when processing payout.
+  const bankSnapshot = isBankAccountComplete(user)
+    ? buildBankSnapshot(user.bankAccount || {})
+    : buildBankSnapshot({});
   const deductions = withdrawalDeductionFields(amount);
   const created = await WithdrawalRequest.create({
     userId,
     amount,
     ...deductions,
     status: 'pending',
-    bankSnapshot: buildBankSnapshot(user.bankAccount || {}),
+    bankSnapshot,
   });
   await recalculateEligibility(userId, null, { skipAutoWithdraw: true });
   return created;
