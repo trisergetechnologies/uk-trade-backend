@@ -2,6 +2,7 @@ const { Wallet, WalletLedger } = require('../models');
 const { parsePagination, metaFor } = require('../utils/pagination');
 const { enrichLedgerEntries } = require('../services/wallet-ledger-enrich.service');
 const { previewEligibility } = require('../services/eligibility.service');
+const { getSpendableForPackages } = require('../services/wallet.service');
 
 async function myWallet(req, res, next) {
   try {
@@ -10,10 +11,15 @@ async function myWallet(req, res, next) {
       res.json({ success: true, data: null });
       return;
     }
-    const preview = await previewEligibility(req.user.sub);
+    const [preview, spendable] = await Promise.all([
+      previewEligibility(req.user.sub),
+      getSpendableForPackages(req.user.sub),
+    ]);
     const data = wallet.toObject ? wallet.toObject() : { ...wallet };
     data.sponsorAvailable = preview.sponsorAvailable;
     data.matchingAvailable = preview.matchingAvailable;
+    data.spendableForPackages = spendable.spendableForPackages;
+    data.tradeReservedInWallet = spendable.tradeReservedInWallet;
     res.json({ success: true, data });
   } catch (error) {
     next(error);

@@ -1,5 +1,5 @@
 const { Plan, PackageProduct, PackageSubscription, HolidayCalendar, TradeCreditEvent, AuditLog, TradeJobRun } = require('../models');
-const { debitWallet, creditWallet } = require('./wallet.service');
+const { debitWallet, creditWallet, assertSpendableForPackagePurchase } = require('./wallet.service');
 const { addIstDays, toIstDateParts, isWeekendFromIstIso, istDateCompare } = require('../utils/date-utils');
 const { recalculateEligibilityForAllPortfolioUsers } = require('./eligibility.service');
 const { AppError } = require('../utils/errors');
@@ -18,6 +18,8 @@ async function purchasePackage({ userId, planCode, packageCode }) {
   if (!product) throw new AppError(404, 'Package not found or inactive');
   const amount = Number(product.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw new AppError(400, 'Invalid package amount');
+  // Trade income (locked or unlocked) cannot fund packages — only deposited / non-trade funds.
+  await assertSpendableForPackagePurchase(userId, amount);
   await debitWallet({
     userId,
     amount,
