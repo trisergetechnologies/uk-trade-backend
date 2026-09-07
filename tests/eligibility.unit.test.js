@@ -56,7 +56,11 @@ describe('eligibility.engine (unit)', () => {
   });
 
   test('computeNetEligibleToWithdraw adds matching like sponsor and subtracts matchingPaidByAdmin', () => {
-    const { computeNetEligibleToWithdraw, resolveMatchingPaidByAdmin } = require('../src/services/eligibility.service');
+    const {
+      computeNetEligibleToWithdraw,
+      computeAvailableIncomeStreams,
+      resolveMatchingPaidByAdmin,
+    } = require('../src/services/eligibility.service');
     const { matchingPaidByAdminForUserCode } = require('../src/constants/matching-paid-by-admin');
 
     expect(computeNetEligibleToWithdraw({ matchingGross: 4000 })).toBe(4000);
@@ -97,7 +101,39 @@ describe('eligibility.engine (unit)', () => {
       })
     ).toBe(0);
 
-    const { computeAvailableIncomeStreams } = require('../src/services/eligibility.service');
+    // Outbound user fund transfers permanently reduce Eligible (admin bonus would
+    // otherwise reappear on every eligibility recalc).
+    expect(
+      computeNetEligibleToWithdraw({
+        tradeGross: 0,
+        sponsorGross: 0,
+        matchingGross: 0,
+        bonus: 100000,
+        fundTransferOut: 30000,
+      })
+    ).toBe(70000);
+
+    expect(
+      computeNetEligibleToWithdraw({
+        bonus: 50000,
+        fundTransferIn: 10000,
+        fundTransferOut: 40000,
+      })
+    ).toBe(20000);
+
+    expect(
+      computeAvailableIncomeStreams({
+        tradeGross: 0,
+        sponsorGross: 8640,
+        matchingGross: 13680,
+        bonus: 8760,
+        matchingPaidByAdmin: 8760,
+        approved: 15690,
+        pending: 0,
+        fundTransferOut: 1710,
+      })
+    ).toEqual({ sponsorAvailable: 0, matchingAvailable: 4920 });
+
     expect(
       computeAvailableIncomeStreams({
         tradeGross: 0,

@@ -1,5 +1,6 @@
 const { env } = require('../config/env');
 const { MatchingIncomeEvent, PackageSubscription, TreeNode, User } = require('../models');
+const { ROLES } = require('../constants/roles');
 const { isNetworkParticipant } = require('../utils/network-participant');
 const { creditWallet } = require('./wallet.service');
 const { getMaxActivePackageAmount } = require('./sponsor.service');
@@ -13,6 +14,8 @@ const {
 } = require('./matching-engine');
 
 const MAX_MATCHING_LEVEL = 5;
+/** Direct referrals #1–#10 (signup order) can trigger matching for their sponsor at any tree depth. */
+const MAX_DIRECT_REFERRAL_MATCHING = 10;
 
 function buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUserId) {
   return `matching:${String(triggerPurchaseSubscriptionId)}:${String(earnerUserId)}`;
@@ -86,6 +89,60 @@ async function getMaxActivePackageAmountAsOf(userId, asOfUtc) {
   return Math.max(...amounts);
 }
 
+async function isWithinFirstDirectReferrals(referrerUserId, buyerUserId) {
+  if (!referrerUserId || !buyerUserId) return false;
+  const first = await User.find({ referredBy: referrerUserId, role: ROLES.USER })
+    .sort({ createdAt: 1, _id: 1 })
+    .limit(MAX_DIRECT_REFERRAL_MATCHING)
+    .select('_id')
+    .lean();
+  return first.some((row) => String(row._id) === String(buyerUserId));
+}
+
+async function resolveDirectReferralMatchingSponsor(triggerBuyerUserId) {
+  const buyer = await User.findById(triggerBuyerUserId).select('referredBy role').lean();
+  if (!buyer?.referredBy || buyer.role !== ROLES.USER) return null;
+  const eligible = await isWithinFirstDirectReferrals(buyer.referredBy, triggerBuyerUserId);
+  if (!eligible) return null;
+  const sponsor = await User.findById(buyer.referredBy).select('_id role').lean();
+  if (!sponsor || !isNetworkParticipant(sponsor)) return null;
+  return sponsor._id;
+}
+
+/**
+ * Earners for a purchase: up to 5 tree hops, plus the buyer's sponsor when the buyer
+ * is one of that sponsor's first 10 direct referrals (any placement depth).
+ */
+async function collectMatchingEarnerIds(triggerBuyerUserId, triggerNode) {
+  const earnerIds = [];
+  const seen = new Set();
+
+  let cursorParentUserId = triggerNode?.parentUserId;
+  let hops = 1;
+  while (cursorParentUserId && hops <= MAX_MATCHING_LEVEL) {
+    const earnerNode = await TreeNode.findOne({ userId: cursorParentUserId }).lean();
+    if (!earnerNode) break;
+    const earnerUser = await User.findById(cursorParentUserId).select('_id role').lean();
+    if (!earnerUser) break;
+    if (isNetworkParticipant(earnerUser)) {
+      const id = String(earnerUser._id);
+      if (!seen.has(id)) {
+        seen.add(id);
+        earnerIds.push(earnerUser._id);
+      }
+    }
+    cursorParentUserId = earnerNode.parentUserId;
+    hops += 1;
+  }
+
+  const sponsorEarnerId = await resolveDirectReferralMatchingSponsor(triggerBuyerUserId);
+  if (sponsorEarnerId && !seen.has(String(sponsorEarnerId))) {
+    earnerIds.push(sponsorEarnerId);
+  }
+
+  return { earnerIds, sponsorEarnerId };
+}
+
 async function buildMatchingSnapshot({
   earnerNode,
   triggerBuyerUserId,
@@ -93,6 +150,7 @@ async function buildMatchingSnapshot({
   asOfUtc = null,
   matchedVolume = 0,
   firstMatchingDone = false,
+  allowAnyTriggerDepth = false,
 }) {
   const earnerLevel = Number(earnerNode.level || 0);
   const minLevel = earnerLevel + 1;
@@ -104,7 +162,8 @@ async function buildMatchingSnapshot({
   if (!triggerNode) return null;
 
   const triggerLevelFromEarner = Number(triggerNode.level || 0) - earnerLevel;
-  if (triggerLevelFromEarner < 1 || triggerLevelFromEarner > MAX_MATCHING_LEVEL) return null;
+  if (triggerLevelFromEarner < 1) return null;
+  if (!allowAnyTriggerDepth && triggerLevelFromEarner > MAX_MATCHING_LEVEL) return null;
 
   const split = splitByFirstBranch(earnerNode.userId, allDescendants);
   const legAtEarner = determineLegAtEarner(triggerBuyerUserId, split);
@@ -156,6 +215,7 @@ async function buildMatchingSnapshot({
     parentAmount,
     leftActiveUserCount,
     rightActiveUserCount,
+    allowAnyTriggerDepth: Boolean(allowAnyTriggerDepth),
   };
 }
 
@@ -176,6 +236,7 @@ async function createEventAndMaybeCredit({
   earnerUser,
   snapshot,
   asOfUtc = null,
+  skipEligibility = false,
 }) {
   const idempotencyKey = buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUser._id);
   const existing = await MatchingIncomeEvent.findOne({ idempotencyKey });
@@ -217,6 +278,11 @@ async function createEventAndMaybeCredit({
     idempotencyKey,
     metadata: {
       considerableRule: calc.rule,
+      matchingTrigger:
+        snapshot.allowAnyTriggerDepth && snapshot.triggerLevelFromEarner > MAX_MATCHING_LEVEL
+          ? 'direct-referral-any-depth'
+          : 'tree-level',
+      ...(snapshot.catchUp ? { catchUp: 'direct-referral-any-depth' } : {}),
     },
   };
 
@@ -304,8 +370,10 @@ async function createEventAndMaybeCredit({
       },
       createdAt: asOfUtc,
     });
-    const { recalculateEligibility } = require('./eligibility.service');
-    await recalculateEligibility(earnerUser._id.toString(), null, { skipAutoWithdraw: true });
+    if (!skipEligibility) {
+      const { recalculateEligibility } = require('./eligibility.service');
+      await recalculateEligibility(earnerUser._id.toString(), null, { skipAutoWithdraw: true });
+    }
   }
 
   return { status, event };
@@ -339,26 +407,22 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
     .lean();
   const triggerPurchaseAmount = round2(triggerSub?.principalAmount || 0);
 
-  let cursorParentUserId = triggerNode.parentUserId;
-  let hops = 1;
+  const { earnerIds, sponsorEarnerId } = await collectMatchingEarnerIds(triggerBuyerUserId, triggerNode);
   let processed = 0;
   let credited = 0;
   let skipped = 0;
   let duplicates = 0;
 
-  while (cursorParentUserId && hops <= MAX_MATCHING_LEVEL) {
-    const earnerNode = await TreeNode.findOne({ userId: cursorParentUserId }).lean();
-    if (!earnerNode) break;
-    const earnerUser = await User.findById(cursorParentUserId)
+  for (const earnerUserId of earnerIds) {
+    const allowAnyTriggerDepth = Boolean(
+      sponsorEarnerId && String(earnerUserId) === String(sponsorEarnerId)
+    );
+    const earnerNode = await TreeNode.findOne({ userId: earnerUserId }).lean();
+    if (!earnerNode) continue;
+    const earnerUser = await User.findById(earnerUserId)
       .select('_id firstMatchingDone matchingMatchedVolume role')
       .lean();
-    if (!earnerUser) break;
-
-    if (!isNetworkParticipant(earnerUser)) {
-      cursorParentUserId = earnerNode.parentUserId;
-      hops += 1;
-      continue;
-    }
+    if (!earnerUser || !isNetworkParticipant(earnerUser)) continue;
 
     const snapshot = await buildMatchingSnapshot({
       earnerNode,
@@ -367,28 +431,199 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
       asOfUtc,
       matchedVolume: earnerUser.matchingMatchedVolume || 0,
       firstMatchingDone: earnerUser.firstMatchingDone,
+      allowAnyTriggerDepth,
     });
 
-    if (snapshot) {
-      processed += 1;
-      const result = await createEventAndMaybeCredit({
-        triggerPurchaseSubscriptionId,
-        triggerBuyerUserId,
-        triggerPurchaseAmount,
-        earnerUser,
-        snapshot,
-        asOfUtc,
-      });
-      if (result.status === 'credited') credited += 1;
-      else if (result.status === 'duplicate') duplicates += 1;
-      else skipped += 1;
-    }
-
-    cursorParentUserId = earnerNode.parentUserId;
-    hops += 1;
+    if (!snapshot) continue;
+    processed += 1;
+    const result = await createEventAndMaybeCredit({
+      triggerPurchaseSubscriptionId,
+      triggerBuyerUserId,
+      triggerPurchaseAmount,
+      earnerUser,
+      snapshot,
+      asOfUtc,
+    });
+    if (result.status === 'credited') credited += 1;
+    else if (result.status === 'duplicate') duplicates += 1;
+    else skipped += 1;
   }
 
   return { processed, credited, skipped, duplicates };
+}
+
+function getMatchingReplayState(stateMap, earnerUserId) {
+  const key = String(earnerUserId);
+  if (!stateMap.has(key)) stateMap.set(key, { matched: 0, firstMatchingDone: false });
+  return stateMap.get(key);
+}
+
+function applyMatchingEventToReplayState(stateMap, event) {
+  if (!event) return;
+  if (String(event.idempotencyKey || '').startsWith('matching:milestone-catchup:')) return;
+  const s = getMatchingReplayState(stateMap, event.earnerUserId);
+  const considerable = round2(event.considerableAmount);
+  if (considerable > 0) s.matched = round2(s.matched + considerable);
+  if (event.firstMatchingBeforeEvent) s.firstMatchingDone = true;
+}
+
+/**
+ * Additive catch-up: credit sponsors who missed matching because a first-10 direct
+ * referral bought while placed deeper than 5 levels. Existing events are never rewritten.
+ */
+async function catchUpDirectReferralAnyDepthMatching({ dryRun = false } = {}) {
+  const subs = await PackageSubscription.find({}).sort({ purchaseAtUtc: 1, _id: 1 }).lean();
+  const replayState = new Map();
+  const creditedEarnerIds = new Set();
+  const perEarner = new Map();
+  const summary = {
+    dryRun: Boolean(dryRun),
+    subscriptionsScanned: subs.length,
+    considered: 0,
+    credited: 0,
+    skipped: 0,
+    duplicates: 0,
+    payoutTotal: 0,
+    rows: [],
+  };
+
+  const bumpEarner = (earnerUserId, payout) => {
+    const key = String(earnerUserId);
+    const row = perEarner.get(key) || { earnerUserId: key, credited: 0, payout: 0 };
+    row.credited += 1;
+    row.payout = round2(row.payout + payout);
+    perEarner.set(key, row);
+  };
+
+  for (const sub of subs) {
+    const existing = await MatchingIncomeEvent.find({ triggerPurchaseSubscriptionId: sub._id }).lean();
+    for (const event of existing) applyMatchingEventToReplayState(replayState, event);
+
+    const triggerNode = await TreeNode.findOne({ userId: sub.userId }).lean();
+    if (!triggerNode) continue;
+
+    const sponsorEarnerId = await resolveDirectReferralMatchingSponsor(sub.userId);
+    if (!sponsorEarnerId) continue;
+
+    const earnerNode = await TreeNode.findOne({ userId: sponsorEarnerId }).lean();
+    if (!earnerNode) continue;
+
+    const already = existing.find((e) => String(e.earnerUserId) === String(sponsorEarnerId));
+    const relativeLevel = Number(triggerNode.level || 0) - Number(earnerNode.level || 0);
+    if (already) {
+      if (relativeLevel > MAX_MATCHING_LEVEL) summary.duplicates += 1;
+      continue;
+    }
+
+    const snapshot = await buildMatchingSnapshot({
+      earnerNode,
+      triggerBuyerUserId: sub.userId,
+      triggerSubscriptionId: sub._id,
+      asOfUtc: sub.purchaseAtUtc,
+      allowAnyTriggerDepth: true,
+    });
+    if (!snapshot) continue;
+    if (snapshot.triggerLevelFromEarner <= MAX_MATCHING_LEVEL) continue;
+
+    snapshot.catchUp = true;
+    summary.considered += 1;
+
+    const earnerUser = await User.findById(sponsorEarnerId)
+      .select('_id firstMatchingDone matchingMatchedVolume role userCode name')
+      .lean();
+    if (!earnerUser || !isNetworkParticipant(earnerUser)) continue;
+
+    const replay = getMatchingReplayState(replayState, sponsorEarnerId);
+    const earnerForCalc = {
+      ...earnerUser,
+      firstMatchingDone: replay.firstMatchingDone,
+      matchingMatchedVolume: replay.matched,
+    };
+    const triggerPurchaseAmount = round2(sub.principalAmount || 0);
+
+    if (dryRun) {
+      const calc = calculateConsiderable({
+        V: triggerPurchaseAmount,
+        leftVolume: snapshot.leftVolumeBefore,
+        rightVolume: snapshot.rightVolumeBefore,
+        matched: replay.matched,
+        legAtEarner: snapshot.legAtEarner,
+        firstMatchingDone: replay.firstMatchingDone,
+        parentAmount: snapshot.parentAmount,
+      });
+      const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(sponsorEarnerId, sub.purchaseAtUtc));
+      const payoutResult = calculateMatchingPayout({
+        considerableAmount: calc.considerable,
+        matchingPercent: env.matchingIncomePercent,
+        maxPackageAmount: capBaseAmount,
+        capThreshold: env.matchingPackageCapThreshold,
+      });
+      const wouldCredit = capBaseAmount > 0 && payoutResult.payoutCreditedAmount > 0 && calc.considerable > 0;
+      applyMatchingEventToReplayState(replayState, {
+        earnerUserId: sponsorEarnerId,
+        idempotencyKey: buildIdempotencyKey(sub._id, sponsorEarnerId),
+        considerableAmount: calc.considerable,
+        firstMatchingBeforeEvent: !replay.firstMatchingDone,
+      });
+      if (wouldCredit) {
+        summary.credited += 1;
+        summary.payoutTotal = round2(summary.payoutTotal + payoutResult.payoutCreditedAmount);
+        bumpEarner(sponsorEarnerId, payoutResult.payoutCreditedAmount);
+        summary.rows.push({
+          earnerUserCode: earnerUser.userCode,
+          earnerName: earnerUser.name,
+          triggerPurchaseSubscriptionId: String(sub._id),
+          triggerLevelFromEarner: snapshot.triggerLevelFromEarner,
+          considerableAmount: calc.considerable,
+          payoutCreditedAmount: payoutResult.payoutCreditedAmount,
+          status: 'credited',
+        });
+      } else {
+        summary.skipped += 1;
+      }
+      continue;
+    }
+
+    const result = await createEventAndMaybeCredit({
+      triggerPurchaseSubscriptionId: sub._id,
+      triggerBuyerUserId: sub.userId,
+      triggerPurchaseAmount,
+      earnerUser: earnerForCalc,
+      snapshot,
+      asOfUtc: sub.purchaseAtUtc,
+      skipEligibility: true,
+    });
+    applyMatchingEventToReplayState(replayState, result.event);
+
+    if (result.status === 'credited') {
+      summary.credited += 1;
+      const payout = round2(result.event.payoutCreditedAmount);
+      summary.payoutTotal = round2(summary.payoutTotal + payout);
+      creditedEarnerIds.add(String(sponsorEarnerId));
+      bumpEarner(sponsorEarnerId, payout);
+      summary.rows.push({
+        earnerUserCode: earnerUser.userCode,
+        earnerName: earnerUser.name,
+        triggerPurchaseSubscriptionId: String(sub._id),
+        triggerLevelFromEarner: snapshot.triggerLevelFromEarner,
+        considerableAmount: result.event.considerableAmount,
+        payoutCreditedAmount: payout,
+        status: 'credited',
+      });
+    } else if (result.status === 'duplicate') {
+      summary.duplicates += 1;
+    } else {
+      summary.skipped += 1;
+    }
+  }
+
+  if (!dryRun && creditedEarnerIds.size) {
+    const { recalculateEligibilityForUsers } = require('./eligibility.service');
+    await recalculateEligibilityForUsers(creditedEarnerIds, null, { skipAutoWithdraw: true });
+  }
+
+  summary.earners = [...perEarner.values()].sort((a, b) => b.payout - a.payout);
+  return summary;
 }
 
 /**
@@ -440,6 +675,10 @@ module.exports = {
   creditMatchingOnPurchase,
   reprocessMatchingForSubscription,
   MAX_MATCHING_LEVEL,
+  MAX_DIRECT_REFERRAL_MATCHING,
+  isWithinFirstDirectReferrals,
+  collectMatchingEarnerIds,
+  catchUpDirectReferralAnyDepthMatching,
   buildIdempotencyKey,
   calculateMatchingPayout,
   calculateConsiderable,

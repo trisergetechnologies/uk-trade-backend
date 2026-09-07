@@ -10,7 +10,7 @@ const {
   Plan,
   WalletLedger,
 } = require('../src/models');
-const { creditMatchingOnPurchase } = require('../src/services/matching.service');
+const { creditMatchingOnPurchase, catchUpDirectReferralAnyDepthMatching } = require('../src/services/matching.service');
 const { calculateMatchingPayout } = require('../src/services/matching-engine');
 const { TABLE_D } = require('./fixtures/matching-tables.fixture');
 
@@ -354,5 +354,247 @@ describe('matching income (integration)', () => {
       capThreshold: 30000,
     });
     expect(payout.payoutCreditedAmount).toBe(20);
+  });
+
+  async function placeRightChainUnder(rootUser, startLevel, depth) {
+    const nodes = [];
+    let parent = rootUser;
+    let parentNode = await TreeNode.findOne({ userId: rootUser._id }).lean();
+    for (let level = startLevel; level <= depth; level += 1) {
+      const u = await createUser({
+        name: `ChainL${level}`,
+        email: `chain-l${level}-${Date.now()}-${level}@test.local`,
+        referredBy: parent._id,
+      });
+      await createTreeNode({
+        userId: u._id,
+        parentUserId: parent._id,
+        side: 'left',
+        level: Number(parentNode.level || 0) + 1,
+      });
+      nodes.push(u);
+      parent = u;
+      parentNode = await TreeNode.findOne({ userId: u._id }).lean();
+    }
+    return nodes;
+  }
+
+  test('first-10 direct referral at level 6 still credits sponsor matching', async () => {
+    const { earner, cr } = await seedTableDMini();
+    const chain = await placeRightChainUnder(cr, 2, 5);
+    const deepDirect = await createUser({
+      name: 'DeepDirect3',
+      email: 'deep-direct-3@test.local',
+      referredBy: earner._id,
+    });
+    const parentAt5 = chain[chain.length - 1];
+    await createTreeNode({
+      userId: deepDirect._id,
+      parentUserId: parentAt5._id,
+      side: 'left',
+      level: 6,
+    });
+
+    const sub = await createSubscription({
+      userId: deepDirect._id,
+      planId: plan._id,
+      principalAmount: 200,
+      purchaseAtUtc: new Date('2026-02-01T10:00:00.000Z'),
+    });
+
+    const result = await creditMatchingOnPurchase({
+      triggerBuyerUserId: deepDirect._id,
+      triggerPurchaseSubscriptionId: sub._id,
+      asOfUtc: sub.purchaseAtUtc,
+    });
+
+    expect(result.credited).toBeGreaterThanOrEqual(1);
+    const event = await MatchingIncomeEvent.findOne({
+      earnerUserId: earner._id,
+      triggerBuyerUserId: deepDirect._id,
+    }).lean();
+    expect(event).toBeTruthy();
+    expect(event.status).toBe('credited');
+    expect(event.triggerLevelFromEarner).toBe(6);
+    expect(event.legAtEarner).toBe('right');
+    expect(event.considerableAmount).toBe(200);
+    expect(event.payoutCreditedAmount).toBe(8);
+    expect(event.metadata.matchingTrigger).toBe('direct-referral-any-depth');
+
+    const wallet = await Wallet.findOne({ userId: earner._id }).lean();
+    expect(wallet.balance).toBe(8);
+  });
+
+  test('11th direct referral at level 6 does not credit sponsor matching', async () => {
+    const { earner, cr } = await seedTableDMini();
+    for (let i = 3; i <= 10; i += 1) {
+      await createUser({
+        name: `Direct${i}`,
+        email: `direct-${i}@test.local`,
+        referredBy: earner._id,
+      });
+    }
+
+    const chain = await placeRightChainUnder(cr, 2, 5);
+    const eleventh = await createUser({
+      name: 'Direct11',
+      email: 'direct-11@test.local',
+      referredBy: earner._id,
+    });
+    const parentAt5 = chain[chain.length - 1];
+    await createTreeNode({
+      userId: eleventh._id,
+      parentUserId: parentAt5._id,
+      side: 'left',
+      level: 6,
+    });
+
+    const sub = await createSubscription({
+      userId: eleventh._id,
+      planId: plan._id,
+      principalAmount: 200,
+      purchaseAtUtc: new Date('2026-02-01T10:00:00.000Z'),
+    });
+
+    await creditMatchingOnPurchase({
+      triggerBuyerUserId: eleventh._id,
+      triggerPurchaseSubscriptionId: sub._id,
+      asOfUtc: sub.purchaseAtUtc,
+    });
+
+    const events = await MatchingIncomeEvent.find({ earnerUserId: earner._id }).lean();
+    expect(events.length).toBe(0);
+  });
+
+  test('joinee under a first-10 deep direct does not credit the original sponsor', async () => {
+    const { earner, cr } = await seedTableDMini();
+    const chain = await placeRightChainUnder(cr, 2, 5);
+    const deepDirect = await createUser({
+      name: 'DeepDirect3b',
+      email: 'deep-direct-3b@test.local',
+      referredBy: earner._id,
+    });
+    const parentAt5 = chain[chain.length - 1];
+    await createTreeNode({
+      userId: deepDirect._id,
+      parentUserId: parentAt5._id,
+      side: 'left',
+      level: 6,
+    });
+
+    const joinee = await createUser({
+      name: 'UnderDeep',
+      email: 'under-deep@test.local',
+      referredBy: deepDirect._id,
+    });
+    await createTreeNode({
+      userId: joinee._id,
+      parentUserId: deepDirect._id,
+      side: 'left',
+      level: 7,
+    });
+
+    const sub = await createSubscription({
+      userId: joinee._id,
+      planId: plan._id,
+      principalAmount: 200,
+      purchaseAtUtc: new Date('2026-02-02T10:00:00.000Z'),
+    });
+
+    await creditMatchingOnPurchase({
+      triggerBuyerUserId: joinee._id,
+      triggerPurchaseSubscriptionId: sub._id,
+      asOfUtc: sub.purchaseAtUtc,
+    });
+
+    const events = await MatchingIncomeEvent.find({ earnerUserId: earner._id }).lean();
+    expect(events.length).toBe(0);
+  });
+
+  test('catch-up credits missed first-10 deep direct without doubling a live credit', async () => {
+    const { earner, cr } = await seedTableDMini();
+    const chain = await placeRightChainUnder(cr, 2, 5);
+    const deepDirect = await createUser({
+      name: 'DeepCatchup',
+      email: 'deep-catchup@test.local',
+      referredBy: earner._id,
+    });
+    const parentAt5 = chain[chain.length - 1];
+    await createTreeNode({
+      userId: deepDirect._id,
+      parentUserId: parentAt5._id,
+      side: 'left',
+      level: 6,
+    });
+    const sub = await createSubscription({
+      userId: deepDirect._id,
+      planId: plan._id,
+      principalAmount: 200,
+      purchaseAtUtc: new Date('2026-02-01T10:00:00.000Z'),
+    });
+
+    const dry = await catchUpDirectReferralAnyDepthMatching({ dryRun: true });
+    expect(dry.credited).toBe(1);
+    expect(dry.payoutTotal).toBe(8);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: earner._id })).toBe(0);
+
+    const live = await catchUpDirectReferralAnyDepthMatching({ dryRun: false });
+    expect(live.credited).toBe(1);
+    expect(live.payoutTotal).toBe(8);
+
+    const event = await MatchingIncomeEvent.findOne({
+      earnerUserId: earner._id,
+      triggerBuyerUserId: deepDirect._id,
+      status: 'credited',
+    }).lean();
+    expect(event).toBeTruthy();
+    expect(event.payoutCreditedAmount).toBe(8);
+    expect(event.metadata.catchUp).toBe('direct-referral-any-depth');
+
+    const wallet = await Wallet.findOne({ userId: earner._id }).lean();
+    expect(wallet.balance).toBe(8);
+
+    const again = await catchUpDirectReferralAnyDepthMatching({ dryRun: false });
+    expect(again.credited).toBe(0);
+    expect(again.duplicates).toBeGreaterThanOrEqual(1);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: earner._id, status: 'credited' })).toBe(1);
+    const walletAfter = await Wallet.findOne({ userId: earner._id }).lean();
+    expect(walletAfter.balance).toBe(8);
+  });
+
+  test('catch-up does not pay again when live matching already credited the deep direct', async () => {
+    const { earner, cr } = await seedTableDMini();
+    const chain = await placeRightChainUnder(cr, 2, 5);
+    const deepDirect = await createUser({
+      name: 'DeepAlready',
+      email: 'deep-already@test.local',
+      referredBy: earner._id,
+    });
+    const parentAt5 = chain[chain.length - 1];
+    await createTreeNode({
+      userId: deepDirect._id,
+      parentUserId: parentAt5._id,
+      side: 'left',
+      level: 6,
+    });
+    const sub = await createSubscription({
+      userId: deepDirect._id,
+      planId: plan._id,
+      principalAmount: 200,
+      purchaseAtUtc: new Date('2026-02-01T10:00:00.000Z'),
+    });
+
+    await creditMatchingOnPurchase({
+      triggerBuyerUserId: deepDirect._id,
+      triggerPurchaseSubscriptionId: sub._id,
+      asOfUtc: sub.purchaseAtUtc,
+    });
+    const walletBefore = await Wallet.findOne({ userId: earner._id }).lean();
+
+    const result = await catchUpDirectReferralAnyDepthMatching({ dryRun: false });
+    expect(result.credited).toBe(0);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: earner._id, status: 'credited' })).toBe(1);
+    const walletAfter = await Wallet.findOne({ userId: earner._id }).lean();
+    expect(walletAfter.balance).toBe(walletBefore.balance);
   });
 });

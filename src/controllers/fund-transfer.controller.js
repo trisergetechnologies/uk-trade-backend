@@ -1,6 +1,9 @@
 const { FundTransfer } = require('../models');
 const { parsePagination, metaFor } = require('../utils/pagination');
-const { createFundTransfer } = require('../services/fund-transfer.service');
+const {
+  createFundTransfer,
+  listSentTransferRecipients,
+} = require('../services/fund-transfer.service');
 
 async function transferToUser(req, res, next) {
   try {
@@ -11,6 +14,15 @@ async function transferToUser(req, res, next) {
       note: req.validated.body.note || '',
     });
     res.status(201).json({ success: true, data: row });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function myTransferRecipients(req, res, next) {
+  try {
+    const data = await listSentTransferRecipients(req.user.sub);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -51,4 +63,4 @@ async function myTransfers(req, res, next) {
   }
 }
 
-module.exports = { transferToUser, myTransfers };
+module.exports = { transferToUser, myTransfers, myTransferRecipients };

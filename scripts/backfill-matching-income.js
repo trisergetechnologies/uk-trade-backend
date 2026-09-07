@@ -46,7 +46,7 @@ const {
   getMaxActivePackageAmountAsOf,
   calculateMatchingPayout,
   calculateConsiderable,
-  MAX_MATCHING_LEVEL,
+  collectMatchingEarnerIds,
 } = require('../src/services/matching.service');
 const { isNetworkParticipant } = require('../src/utils/network-participant');
 const { recalculateEligibilityForAllPortfolioUsers } = require('../src/services/eligibility.service');
@@ -219,18 +219,12 @@ async function simulateReplay() {
     const triggerNode = await getEarnerNode(triggerBuyerUserId);
     if (!triggerNode) continue;
 
-    let cursorParentUserId = triggerNode.parentUserId;
-    let hops = 1;
-    while (cursorParentUserId && hops <= MAX_MATCHING_LEVEL) {
-      const earnerNode = await getEarnerNode(cursorParentUserId);
-      if (!earnerNode) break;
-      const earnerUser = await getEarnerUser(cursorParentUserId);
-      if (!earnerUser) break;
-      if (!isNetworkParticipant(earnerUser)) {
-        cursorParentUserId = earnerNode.parentUserId;
-        hops += 1;
-        continue;
-      }
+    const { earnerIds, sponsorEarnerId } = await collectMatchingEarnerIds(triggerBuyerUserId, triggerNode);
+    for (const earnerUserId of earnerIds) {
+      const earnerNode = await getEarnerNode(earnerUserId);
+      if (!earnerNode) continue;
+      const earnerUser = await getEarnerUser(earnerUserId);
+      if (!earnerUser || !isNetworkParticipant(earnerUser)) continue;
 
       const earnerId = String(earnerUser._id);
       const snapshot = await buildMatchingSnapshot({
@@ -240,47 +234,45 @@ async function simulateReplay() {
         asOfUtc,
         matchedVolume: matchedByEarner.get(earnerId) || 0,
         firstMatchingDone: firstDone.has(earnerId),
+        allowAnyTriggerDepth: Boolean(sponsorEarnerId && earnerId === String(sponsorEarnerId)),
       });
 
-      if (snapshot) {
-        processed += 1;
-        const calc = calculateConsiderable({
-          V: triggerPurchaseAmount,
-          leftVolume: snapshot.leftVolumeBefore,
-          rightVolume: snapshot.rightVolumeBefore,
-          matched: snapshot.matchedVolumeBefore,
-          legAtEarner: snapshot.legAtEarner,
-          firstMatchingDone: firstDone.has(earnerId),
-          parentAmount: snapshot.parentAmount,
-        });
+      if (!snapshot) continue;
 
-        if (calc.firstMatchingDoneAfter) firstDone.add(earnerId);
-        if (calc.considerable > 0) {
-          matchedByEarner.set(earnerId, calc.matchedAfter);
-        }
+      processed += 1;
+      const calc = calculateConsiderable({
+        V: triggerPurchaseAmount,
+        leftVolume: snapshot.leftVolumeBefore,
+        rightVolume: snapshot.rightVolumeBefore,
+        matched: snapshot.matchedVolumeBefore,
+        legAtEarner: snapshot.legAtEarner,
+        firstMatchingDone: firstDone.has(earnerId),
+        parentAmount: snapshot.parentAmount,
+      });
 
-        if (calc.considerable <= 0) {
-          skipped += 1;
-        } else {
-          const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
-          const { payoutCreditedAmount } = calculateMatchingPayout({
-            considerableAmount: calc.considerable,
-            matchingPercent: env.matchingIncomePercent,
-            maxPackageAmount: capBaseAmount,
-            capThreshold: env.matchingPackageCapThreshold,
-          });
-          if (payoutCreditedAmount > 0) {
-            paidByEarner.set(earnerId, round2((paidByEarner.get(earnerId) || 0) + payoutCreditedAmount));
-            eventsByEarner.set(earnerId, (eventsByEarner.get(earnerId) || 0) + 1);
-            credited += 1;
-          } else {
-            skipped += 1;
-          }
-        }
+      if (calc.firstMatchingDoneAfter) firstDone.add(earnerId);
+      if (calc.considerable > 0) {
+        matchedByEarner.set(earnerId, calc.matchedAfter);
       }
 
-      cursorParentUserId = earnerNode.parentUserId;
-      hops += 1;
+      if (calc.considerable <= 0) {
+        skipped += 1;
+      } else {
+        const capBaseAmount = round2(await getMaxActivePackageAmountAsOf(earnerUser._id, asOfUtc));
+        const { payoutCreditedAmount } = calculateMatchingPayout({
+          considerableAmount: calc.considerable,
+          matchingPercent: env.matchingIncomePercent,
+          maxPackageAmount: capBaseAmount,
+          capThreshold: env.matchingPackageCapThreshold,
+        });
+        if (payoutCreditedAmount > 0) {
+          paidByEarner.set(earnerId, round2((paidByEarner.get(earnerId) || 0) + payoutCreditedAmount));
+          eventsByEarner.set(earnerId, (eventsByEarner.get(earnerId) || 0) + 1);
+          credited += 1;
+        } else {
+          skipped += 1;
+        }
+      }
     }
   }
 

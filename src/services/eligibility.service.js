@@ -77,7 +77,12 @@ function roundMoney(value) {
 
 /**
  * Eligible = unlocked trade + sponsor + matching + leftover admin bonus
+ *          + user fund transfers in − user fund transfers out
  *          − matching already paid via admin workaround − approved − pending.
+ *
+ * User↔user fund transfers must be included so Eligible stays reduced after
+ * outbound transfers (admin credits live in bonus and would otherwise return
+ * on every eligibility recalc).
  */
 function computeNetEligibleToWithdraw({
   tradeGross = 0,
@@ -87,12 +92,16 @@ function computeNetEligibleToWithdraw({
   matchingPaidByAdmin = 0,
   approved = 0,
   pending = 0,
+  fundTransferIn = 0,
+  fundTransferOut = 0,
 } = {}) {
   const net =
     Number(tradeGross || 0) +
     Number(sponsorGross || 0) +
     Number(matchingGross || 0) +
-    Number(bonus || 0) -
+    Number(bonus || 0) +
+    Number(fundTransferIn || 0) -
+    Number(fundTransferOut || 0) -
     Number(matchingPaidByAdmin || 0) -
     Number(approved || 0) -
     Number(pending || 0);
@@ -112,9 +121,12 @@ function computeAvailableIncomeStreams({
   matchingPaidByAdmin = 0,
   approved = 0,
   pending = 0,
+  fundTransferIn = 0,
+  fundTransferOut = 0,
 } = {}) {
   const matchingNet = Math.max(0, Number(matchingGross || 0) - Number(matchingPaidByAdmin || 0));
-  let remainingWithdrawn = Number(approved || 0) + Number(pending || 0);
+  const netFundOut = Math.max(0, Number(fundTransferOut || 0) - Number(fundTransferIn || 0));
+  let remainingWithdrawn = Number(approved || 0) + Number(pending || 0) + netFundOut;
 
   const take = (amount) => {
     const avail = Math.max(0, Number(amount) || 0);
@@ -148,6 +160,10 @@ async function previewEligibility(userId, todayIst = null) {
   const pending = await sumWithdrawalsByStatus(userId, 'pending');
   const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
   const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
+  const [fundTransferIn, fundTransferOut] = await Promise.all([
+    sumFundTransfersByDirection(userId, 'credit'),
+    sumFundTransfersByDirection(userId, 'debit'),
+  ]);
   const proposedEligible = computeNetEligibleToWithdraw({
     tradeGross,
     sponsorGross,
@@ -156,6 +172,8 @@ async function previewEligibility(userId, todayIst = null) {
     matchingPaidByAdmin,
     approved,
     pending,
+    fundTransferIn,
+    fundTransferOut,
   });
   const currentEligible = roundMoney(wallet.eligibleToWithdraw);
   const available = computeAvailableIncomeStreams({
@@ -166,6 +184,8 @@ async function previewEligibility(userId, todayIst = null) {
     matchingPaidByAdmin,
     approved,
     pending,
+    fundTransferIn,
+    fundTransferOut,
   });
   return {
     userCode: user?.userCode || '',
@@ -176,6 +196,8 @@ async function previewEligibility(userId, todayIst = null) {
     matchingPaidByAdmin: roundMoney(matchingPaidByAdmin),
     approved: roundMoney(approved),
     pending: roundMoney(pending),
+    fundTransferIn: roundMoney(fundTransferIn),
+    fundTransferOut: roundMoney(fundTransferOut),
     sponsorAvailable: available.sponsorAvailable,
     matchingAvailable: available.matchingAvailable,
     currentEligible,
@@ -192,6 +214,18 @@ async function sumWithdrawalsByStatus(userId, status) {
     { $group: { _id: null, t: { $sum: '$amount' } } },
   ]);
   return rows[0]?.t || 0;
+}
+
+/** User↔user transfers only (admin_credit is separate and already in eligibleBonus). */
+async function sumFundTransfersByDirection(userId, direction) {
+  const { WalletLedger } = require('../models');
+  const uid = new mongoose.Types.ObjectId(userId);
+  const contextType = direction === 'credit' ? 'fund_transfer_in' : 'fund_transfer_out';
+  const rows = await WalletLedger.aggregate([
+    { $match: { userId: uid, direction, contextType } },
+    { $group: { _id: null, t: { $sum: '$amount' } } },
+  ]);
+  return Number(rows[0]?.t || 0);
 }
 
 /**
@@ -279,6 +313,10 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
   const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
   const user = await User.findById(userId).select('userCode').lean();
   const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
+  const [fundTransferIn, fundTransferOut] = await Promise.all([
+    sumFundTransfersByDirection(userId, 'credit'),
+    sumFundTransfersByDirection(userId, 'debit'),
+  ]);
 
   const hasTradeBaseline = wallet.lastGrossEligibleTrade != null;
   let newlyUnlockedTrade = await computeTradeAutoWithdrawAmount(
@@ -302,6 +340,8 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
     matchingPaidByAdmin,
     approved,
     pending,
+    fundTransferIn,
+    fundTransferOut,
   });
   await Wallet.updateOne(
     { userId },
@@ -336,6 +376,7 @@ module.exports = {
   computeTotalMatchingCredited,
   computeNetEligibleToWithdraw,
   computeAvailableIncomeStreams,
+  sumFundTransfersByDirection,
   resolveMatchingPaidByAdmin,
   previewEligibility,
   recalculateEligibility,
