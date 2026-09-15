@@ -20,6 +20,7 @@
         "apply:matching-eligible": "node scripts/apply-matching-eligible.js",
         "backfill:matching-direct-referral": "node scripts/backfill-matching-direct-referral-catchup.js",
         "report:direct-referrals": "node scripts/report-direct-referrals.js",
+        "manual:matching-credit": "node scripts/manual-credit-matching-income.js",
         "repair:duplicate-auto-withdrawals": "node scripts/repair-duplicate-auto-withdrawals.js",
         "backfill:missed-trade-auto-wd": "node scripts/backfill-missed-trade-auto-withdrawals.js",
         "analyze:tree-vs-signup": "node scripts/analyze-tree-vs-signup.js",
