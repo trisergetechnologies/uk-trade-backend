@@ -5,11 +5,14 @@
  *   --limit N              — top N (default 30)
  *   --min N                — only users with at least N directs (default 1)
  *   --with-deep            — also count first-10 directs placed deeper than 5 levels
+ *   --deep-only            — with --with-deep: only print users who have deepFirst10 > 0
+ *   --all-with-deep        — scan every sponsor (not just top N) for deep first-10
  *   --user-code USRXXXX    — single user detail
  *
  * Run:
  *   node scripts/report-direct-referrals.js
  *   node scripts/report-direct-referrals.js --limit 50 --with-deep
+ *   node scripts/report-direct-referrals.js --all-with-deep
  *   node scripts/report-direct-referrals.js --user-code USRIWHLVT --with-deep
  */
 
@@ -25,7 +28,9 @@ const args = process.argv.slice(2);
 const limitIdx = args.indexOf('--limit');
 const minIdx = args.indexOf('--min');
 const userCodeIdx = args.indexOf('--user-code');
-const WITH_DEEP = args.includes('--with-deep');
+const WITH_DEEP = args.includes('--with-deep') || args.includes('--all-with-deep') || args.includes('--deep-only');
+const ALL_WITH_DEEP = args.includes('--all-with-deep');
+const DEEP_ONLY = args.includes('--deep-only') || ALL_WITH_DEEP;
 const LIMIT = limitIdx >= 0 ? Math.max(1, Number(args[limitIdx + 1]) || 30) : 30;
 const MIN = minIdx >= 0 ? Math.max(0, Number(args[minIdx + 1]) || 1) : 1;
 const SINGLE_USER_CODE =
@@ -83,7 +88,7 @@ async function run() {
     { $group: { _id: '$referredBy', directReferrals: { $sum: 1 } } },
     { $match: { directReferrals: { $gte: MIN } } },
     { $sort: { directReferrals: -1 } },
-    { $limit: LIMIT },
+    ...(ALL_WITH_DEEP ? [] : [{ $limit: LIMIT }]),
   ]);
 
   const ids = ranks.map((r) => r._id);
@@ -93,6 +98,7 @@ async function run() {
   const byId = new Map(users.map((u) => [String(u._id), u]));
 
   const rows = [];
+  let sponsorsWithDeep = 0;
   for (const r of ranks) {
     const u = byId.get(String(r._id));
     if (!u) continue;
@@ -105,18 +111,39 @@ async function run() {
     if (WITH_DEEP) {
       const deep = await deepFirst10Count(u._id);
       row.deepFirst10 = deep.deepFirst10;
+      if (deep.deepFirst10 > 0) sponsorsWithDeep += 1;
+      if (DEEP_ONLY && deep.deepFirst10 <= 0) continue;
     }
     rows.push(row);
   }
 
   console.log('\n=== TOP SPONSORS BY DIRECT REFERRALS ===');
-  console.log(`Showing top ${rows.length} with >= ${MIN} directs${WITH_DEEP ? ' (+ deep first-10 count)' : ''}\n`);
+  if (ALL_WITH_DEEP) {
+    console.log(
+      `Scanned all sponsors with >= ${MIN} directs; ${sponsorsWithDeep} have first-10 directs deeper than L5\n`
+    );
+  } else {
+    console.log(
+      `Showing ${DEEP_ONLY ? 'deep-only from ' : ''}top ${Math.min(LIMIT, ranks.length)} with >= ${MIN} directs${WITH_DEEP ? ' (+ deep first-10 count)' : ''}\n`
+    );
+  }
+  if (!rows.length) {
+    console.log('No matching sponsors.');
+    if (WITH_DEEP) {
+      console.log(
+        '\nNo sponsor currently has a first-10 direct placed deeper than 5 levels.'
+      );
+      console.log('Catch-up will credit 0 until such placements + purchases exist.');
+      console.log('Live matching rule still applies for future deep first-10 purchases.\n');
+    }
+    return;
+  }
   for (const row of rows) {
     const deepPart = WITH_DEEP ? ` | deepFirst10(>L5)=${row.deepFirst10}` : '';
     console.log(`${String(row.directReferrals).padStart(4)} directs | ${row.userCode} | ${row.name}${deepPart}`);
   }
   console.log('\nTip: for catch-up pilot, prefer users with deepFirst10 > 0:');
-  console.log('  node scripts/report-direct-referrals.js --limit 50 --with-deep');
+  console.log('  node scripts/report-direct-referrals.js --all-with-deep');
   console.log('  node scripts/backfill-matching-direct-referral-catchup.js --diagnose --user-code THEIRCODE\n');
 }
 
