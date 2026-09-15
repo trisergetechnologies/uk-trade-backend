@@ -649,6 +649,140 @@ async function catchUpDirectReferralAnyDepthMatching({
 }
 
 /**
+ * Read-only report: why catch-up would/wouldn't pay a sponsor (first-10 directs, depth, purchases).
+ */
+async function diagnoseDirectReferralCatchupForUser({ userCode }) {
+  const code = String(userCode || '').trim().toUpperCase();
+  if (!code) throw new Error('userCode is required');
+
+  const earner = await User.findOne({ userCode: code })
+    .select('_id userCode name email role firstMatchingDone matchingMatchedVolume')
+    .lean();
+  if (!earner) throw new Error(`User not found for userCode=${code}`);
+
+  const earnerNode = await TreeNode.findOne({ userId: earner._id }).lean();
+  const directs = await User.find({ referredBy: earner._id, role: ROLES.USER })
+    .sort({ createdAt: 1, _id: 1 })
+    .select('_id userCode name createdAt')
+    .lean();
+
+  const first10 = directs.slice(0, MAX_DIRECT_REFERRAL_MATCHING);
+  const first10Ids = new Set(first10.map((d) => String(d._id)));
+
+  const descendants = earnerNode ? await collectDownlineDescendants(earner._id) : [];
+  const byUserId = new Map(descendants.map((n) => [String(n.userId), n]));
+
+  const rows = [];
+  let catchUpCandidates = 0;
+  let withinFivePurchases = 0;
+  let alreadyEventPurchases = 0;
+  let notInTree = 0;
+  let noPurchase = 0;
+
+  for (let i = 0; i < directs.length; i += 1) {
+    const d = directs[i];
+    const rank = i + 1;
+    const inFirst10 = first10Ids.has(String(d._id));
+    const node = byUserId.get(String(d._id));
+    const relativeLevel = node && earnerNode ? Number(node.level || 0) - Number(earnerNode.level || 0) : null;
+    const subs = await PackageSubscription.find({ userId: d._id })
+      .sort({ purchaseAtUtc: 1 })
+      .select('_id principalAmount purchaseAtUtc status')
+      .lean();
+
+    if (!subs.length) noPurchase += 1;
+    if (inFirst10 && !node) notInTree += 1;
+
+    const purchases = [];
+    for (const sub of subs) {
+      const event = await MatchingIncomeEvent.findOne({
+        triggerPurchaseSubscriptionId: sub._id,
+        earnerUserId: earner._id,
+      })
+        .select('status payoutCreditedAmount considerableAmount triggerLevelFromEarner reason idempotencyKey')
+        .lean();
+
+      let catchUpEligible = false;
+      let reason = '';
+      if (!inFirst10) reason = 'not-in-first-10-directs';
+      else if (!node) {
+        reason = 'not-in-earner-downline-tree';
+      } else if (relativeLevel == null || relativeLevel < 1) reason = 'invalid-relative-level';
+      else if (relativeLevel <= MAX_MATCHING_LEVEL) {
+        reason = 'within-5-levels-live-path-not-catchup';
+        withinFivePurchases += 1;
+      } else if (event) {
+        reason = 'already-has-matching-event';
+        alreadyEventPurchases += 1;
+      } else {
+        catchUpEligible = true;
+        reason = 'catchup-candidate';
+        catchUpCandidates += 1;
+      }
+
+      purchases.push({
+        subscriptionId: String(sub._id),
+        principalAmount: sub.principalAmount,
+        purchaseAtUtc: sub.purchaseAtUtc,
+        status: sub.status,
+        existingEvent: event
+          ? {
+              status: event.status,
+              payoutCreditedAmount: event.payoutCreditedAmount,
+              considerableAmount: event.considerableAmount,
+              triggerLevelFromEarner: event.triggerLevelFromEarner,
+              reason: event.reason,
+            }
+          : null,
+        catchUpEligible,
+        skipReason: reason,
+      });
+    }
+
+    rows.push({
+      rank,
+      inFirst10,
+      userCode: d.userCode,
+      name: d.name,
+      createdAt: d.createdAt,
+      relativeLevel,
+      side: node?.side || null,
+      inEarnerTree: Boolean(node),
+      purchaseCount: subs.length,
+      purchases,
+    });
+  }
+
+  const existingCredits = await MatchingIncomeEvent.countDocuments({
+    earnerUserId: earner._id,
+    status: 'credited',
+  });
+
+  return {
+    earner: {
+      userCode: earner.userCode,
+      name: earner.name,
+      email: earner.email,
+      firstMatchingDone: earner.firstMatchingDone,
+      matchingMatchedVolume: earner.matchingMatchedVolume,
+      treeLevel: earnerNode?.level ?? null,
+      hasTreeNode: Boolean(earnerNode),
+      existingCreditedMatchingEvents: existingCredits,
+    },
+    totals: {
+      directReferrals: directs.length,
+      first10: first10.length,
+      catchUpCandidates,
+      withinFivePurchases,
+      alreadyEventPurchases,
+      directsWithNoPurchase: noPurchase,
+      first10NotInTree: notInTree,
+    },
+    directs: rows,
+  };
+}
+
+/**
  * Re-run matching for a purchase whose events were miscomputed (e.g. null-asOfUtc zero volumes).
  * Deletes skipped zero-considerable events for that subscription, then replays at purchase time.
  */
@@ -701,6 +835,7 @@ module.exports = {
   isWithinFirstDirectReferrals,
   collectMatchingEarnerIds,
   catchUpDirectReferralAnyDepthMatching,
+  diagnoseDirectReferralCatchupForUser,
   buildIdempotencyKey,
   calculateMatchingPayout,
   calculateConsiderable,
