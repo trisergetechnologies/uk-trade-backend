@@ -14,11 +14,16 @@
  *   ALLOW_PRODUCTION_DB=true  — required when the MONGO_URI database name is uk_trade
  *
  * Flags:
- *   --dry-run   — report only, no wallet/event writes
+ *   --dry-run                 — report only, no wallet/event writes
+ *   --user-code USRXXXX       — only credit that sponsor (pilot one user, then all)
  *
  * Run from uk-trade-backend (API stopped):
- *   node scripts/backfill-matching-direct-referral-catchup.js --dry-run
+ *   node scripts/backfill-matching-direct-referral-catchup.js --dry-run --user-code THEIRCODE
  *
+ *   PROD_PROTECT=false BACKFILL_DIRECT_REFERRAL_CATCHUP_CONFIRM=YES_I_HAVE_A_DATABASE_BACKUP \
+ *     ALLOW_PRODUCTION_DB=true node scripts/backfill-matching-direct-referral-catchup.js --user-code THEIRCODE
+ *
+ *   # after verifying one user, omit --user-code for everyone:
  *   PROD_PROTECT=false BACKFILL_DIRECT_REFERRAL_CATCHUP_CONFIRM=YES_I_HAVE_A_DATABASE_BACKUP \
  *     ALLOW_PRODUCTION_DB=true node scripts/backfill-matching-direct-referral-catchup.js
  */
@@ -33,6 +38,9 @@ const { logger } = require('../src/utils/logger');
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
+const userCodeArgIndex = args.indexOf('--user-code');
+const SINGLE_USER_CODE =
+  userCodeArgIndex >= 0 ? String(args[userCodeArgIndex + 1] || '').trim().toUpperCase() : '';
 
 function assertBackfillAllowed() {
   if (DRY_RUN) return;
@@ -66,17 +74,26 @@ function assertDbTargetAllowed() {
 async function run() {
   assertBackfillAllowed();
   const dbName = assertDbTargetAllowed();
-  const summary = await catchUpDirectReferralAnyDepthMatching({ dryRun: DRY_RUN });
+  if (userCodeArgIndex >= 0 && !SINGLE_USER_CODE) {
+    throw new Error('--user-code requires a value, e.g. --user-code USRABC12');
+  }
+
+  const summary = await catchUpDirectReferralAnyDepthMatching({
+    dryRun: DRY_RUN,
+    userCode: SINGLE_USER_CODE || null,
+  });
   summary.dbName = dbName;
 
   const outDir = path.join(__dirname, 'output');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-  const outFile = path.join(outDir, `direct-referral-catchup-${Date.now()}.json`);
+  const scope = SINGLE_USER_CODE ? `-${SINGLE_USER_CODE}` : '-all';
+  const outFile = path.join(outDir, `direct-referral-catchup${scope}-${Date.now()}.json`);
   fs.writeFileSync(outFile, JSON.stringify(summary, null, 2));
 
   logger.info(
     {
       dryRun: DRY_RUN,
+      userCode: SINGLE_USER_CODE || null,
       subscriptionsScanned: summary.subscriptionsScanned,
       considered: summary.considered,
       credited: summary.credited,
@@ -91,6 +108,7 @@ async function run() {
   console.log('\n=== DIRECT-REFERRAL MATCHING CATCH-UP ===');
   console.log(`Mode: ${DRY_RUN ? 'DRY-RUN (no DB writes)' : 'LIVE (wallet + events written)'}`);
   console.log(`Database: ${dbName}`);
+  console.log(`Scope: ${SINGLE_USER_CODE ? `single user ${SINGLE_USER_CODE}` : 'ALL users'}`);
   console.log(`Purchases scanned: ${summary.subscriptionsScanned}`);
   console.log(`Deep first-10 directs considered: ${summary.considered}`);
   console.log(`Already had an event (skipped): ${summary.duplicates}`);
@@ -102,6 +120,8 @@ async function run() {
   if (DRY_RUN) {
     console.log('\nNOTE: --dry-run does NOT change matching income.');
     console.log('Re-run WITHOUT --dry-run (with confirm env vars) to apply credits.\n');
+  } else if (SINGLE_USER_CODE) {
+    console.log('\nDone for one user. Verify Matching Income + wallet, then re-run without --user-code.\n');
   } else {
     console.log('\nDone. Users should see new Matching Income rows; existing rows were not doubled.\n');
   }

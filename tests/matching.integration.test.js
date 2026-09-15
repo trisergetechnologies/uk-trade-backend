@@ -597,4 +597,67 @@ describe('matching income (integration)', () => {
     const walletAfter = await Wallet.findOne({ userId: earner._id }).lean();
     expect(walletAfter.balance).toBe(walletBefore.balance);
   });
+
+  test('catch-up --user-code / earnerUserId only credits that sponsor', async () => {
+    const a = await seedTableDMini();
+    const bEarner = await createUser({ name: 'Earner B', email: 'earner-b@test.local' });
+    const bLeft = await createUser({ name: 'BL-B', email: 'bl-b@test.local', referredBy: bEarner._id });
+    const bRight = await createUser({ name: 'CR-B', email: 'cr-b@test.local', referredBy: bEarner._id });
+    await createTreeNode({ userId: bEarner._id, parentUserId: null, side: 'left', level: 0 });
+    await createTreeNode({ userId: bLeft._id, parentUserId: bEarner._id, side: 'left', level: 1 });
+    await createTreeNode({ userId: bRight._id, parentUserId: bEarner._id, side: 'right', level: 1 });
+    const t0 = new Date('2026-01-01T12:00:00.000Z');
+    await createSubscription({ userId: bLeft._id, planId: plan._id, principalAmount: 800, purchaseAtUtc: t0 });
+    await createSubscription({
+      userId: bRight._id,
+      planId: plan._id,
+      principalAmount: 500,
+      purchaseAtUtc: new Date(t0.getTime() + 1000),
+    });
+    await createSubscription({
+      userId: bEarner._id,
+      planId: plan._id,
+      principalAmount: 35000,
+      purchaseAtUtc: new Date(t0.getTime() + 2000),
+    });
+
+    async function placeDeepDirect(earner, rightChild, email) {
+      const chain = await placeRightChainUnder(rightChild, 2, 5);
+      const deepDirect = await createUser({
+        name: email,
+        email,
+        referredBy: earner._id,
+      });
+      await createTreeNode({
+        userId: deepDirect._id,
+        parentUserId: chain[chain.length - 1]._id,
+        side: 'left',
+        level: 6,
+      });
+      await createSubscription({
+        userId: deepDirect._id,
+        planId: plan._id,
+        principalAmount: 200,
+        purchaseAtUtc: new Date('2026-02-01T10:00:00.000Z'),
+      });
+      return deepDirect;
+    }
+
+    await placeDeepDirect(a.earner, a.cr, 'deep-a@test.local');
+    await placeDeepDirect(bEarner, bRight, 'deep-b@test.local');
+
+    const filtered = await catchUpDirectReferralAnyDepthMatching({
+      dryRun: false,
+      userCode: a.earner.userCode,
+    });
+    expect(filtered.filterUserCode).toBe(a.earner.userCode);
+    expect(filtered.credited).toBe(1);
+    expect(filtered.payoutTotal).toBe(8);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: a.earner._id, status: 'credited' })).toBe(1);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: bEarner._id, status: 'credited' })).toBe(0);
+
+    const rest = await catchUpDirectReferralAnyDepthMatching({ dryRun: false });
+    expect(rest.credited).toBe(1);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: bEarner._id, status: 'credited' })).toBe(1);
+  });
 });

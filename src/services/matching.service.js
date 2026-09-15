@@ -470,14 +470,35 @@ function applyMatchingEventToReplayState(stateMap, event) {
 /**
  * Additive catch-up: credit sponsors who missed matching because a first-10 direct
  * referral bought while placed deeper than 5 levels. Existing events are never rewritten.
+ *
+ * Optional filter:
+ *   earnerUserId | userCode — only credit that sponsor (pilot one user, then all).
+ * Replay still walks all purchases so matched-volume state stays correct for the filter.
  */
-async function catchUpDirectReferralAnyDepthMatching({ dryRun = false } = {}) {
+async function catchUpDirectReferralAnyDepthMatching({
+  dryRun = false,
+  earnerUserId = null,
+  userCode = null,
+} = {}) {
+  let filterEarnerId = earnerUserId ? String(earnerUserId) : null;
+  let filterUserCode = userCode ? String(userCode).trim().toUpperCase() : null;
+  if (filterUserCode && !filterEarnerId) {
+    const earner = await User.findOne({ userCode: filterUserCode }).select('_id userCode').lean();
+    if (!earner) {
+      throw new Error(`User not found for userCode=${filterUserCode}`);
+    }
+    filterEarnerId = String(earner._id);
+    filterUserCode = earner.userCode;
+  }
+
   const subs = await PackageSubscription.find({}).sort({ purchaseAtUtc: 1, _id: 1 }).lean();
   const replayState = new Map();
   const creditedEarnerIds = new Set();
   const perEarner = new Map();
   const summary = {
     dryRun: Boolean(dryRun),
+    filterUserCode: filterUserCode || null,
+    filterEarnerId: filterEarnerId || null,
     subscriptionsScanned: subs.length,
     considered: 0,
     credited: 0,
@@ -487,8 +508,8 @@ async function catchUpDirectReferralAnyDepthMatching({ dryRun = false } = {}) {
     rows: [],
   };
 
-  const bumpEarner = (earnerUserId, payout) => {
-    const key = String(earnerUserId);
+  const bumpEarner = (earnerId, payout) => {
+    const key = String(earnerId);
     const row = perEarner.get(key) || { earnerUserId: key, credited: 0, payout: 0 };
     row.credited += 1;
     row.payout = round2(row.payout + payout);
@@ -504,6 +525,7 @@ async function catchUpDirectReferralAnyDepthMatching({ dryRun = false } = {}) {
 
     const sponsorEarnerId = await resolveDirectReferralMatchingSponsor(sub.userId);
     if (!sponsorEarnerId) continue;
+    if (filterEarnerId && String(sponsorEarnerId) !== filterEarnerId) continue;
 
     const earnerNode = await TreeNode.findOne({ userId: sponsorEarnerId }).lean();
     if (!earnerNode) continue;
