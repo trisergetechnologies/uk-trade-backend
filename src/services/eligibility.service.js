@@ -76,9 +76,88 @@ function roundMoney(value) {
 }
 
 /**
+ * How much of each package purchase was paid from sponsor, matching, or incoming
+ * transfers (money that is added to Eligible). Walks the ledger in time order.
+ *
+ * A package consumes admin bonus first — that reduction already lives in eligibleBonus —
+ * then deposits (never part of Eligible), then sponsor / matching / transfers in arrival order.
+ * Withdrawals and outbound transfers shrink those pools so a later package is not charged
+ * to money that has already left, but they are not themselves package spend.
+ */
+function computePackageSpendFromEligibleLedger(entries) {
+  const sorted = [...(entries || [])].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+  let deposit = 0;
+  let bonus = 0;
+  const chunks = [];
+  const spent = { fundTransferIn: 0, sponsor: 0, matching: 0 };
+  const spendKey = { transfer: 'fundTransferIn', sponsor: 'sponsor', matching: 'matching' };
+
+  function consumeChunks(amount, record) {
+    let rest = amount;
+    for (const chunk of chunks) {
+      if (rest <= 0) break;
+      if (chunk.left <= 0) continue;
+      const take = Math.min(chunk.left, rest);
+      chunk.left -= take;
+      rest -= take;
+      if (record) spent[spendKey[chunk.kind]] += take;
+    }
+    return amount - rest;
+  }
+
+  for (const entry of sorted) {
+    const amt = Number(entry.amount) || 0;
+    if (amt <= 0) continue;
+    const { direction, contextType } = entry;
+    if (direction === 'credit' && contextType === 'fund_request_approval') deposit += amt;
+    else if (direction === 'credit' && contextType === 'admin_credit') bonus += amt;
+    else if (direction === 'credit' && contextType === 'fund_transfer_in') chunks.push({ kind: 'transfer', left: amt });
+    else if (direction === 'credit' && contextType === 'sponsor_income') chunks.push({ kind: 'sponsor', left: amt });
+    else if (direction === 'credit' && contextType === 'matching_income') chunks.push({ kind: 'matching', left: amt });
+    else if (direction === 'debit' && contextType === 'package_purchase') {
+      const fromBonus = Math.min(bonus, amt);
+      bonus -= fromBonus;
+      let rest = amt - fromBonus;
+      const fromDeposit = Math.min(deposit, rest);
+      deposit -= fromDeposit;
+      rest -= fromDeposit;
+      consumeChunks(rest, true);
+    } else if (
+      direction === 'debit' &&
+      (contextType === 'withdrawal_approved' || contextType === 'fund_transfer_out')
+    ) {
+      let rest = amt;
+      rest -= consumeChunks(rest, false);
+      deposit -= Math.min(deposit, rest);
+    }
+  }
+
+  const fundTransferIn = roundMoney(spent.fundTransferIn);
+  const sponsor = roundMoney(spent.sponsor);
+  const matching = roundMoney(spent.matching);
+  return {
+    fundTransferIn,
+    sponsor,
+    matching,
+    total: roundMoney(spent.fundTransferIn + spent.sponsor + spent.matching),
+  };
+}
+
+async function computePackageSpendForUser(userId) {
+  const { WalletLedger } = require('../models');
+  const entries = await WalletLedger.find({ userId })
+    .select('amount direction contextType createdAt')
+    .lean();
+  return computePackageSpendFromEligibleLedger(entries);
+}
+
+/**
  * Eligible = unlocked trade + sponsor + matching + leftover admin bonus
  *          + user fund transfers in − user fund transfers out
- *          − matching already paid via admin workaround − approved − pending.
+ *          − matching already paid via admin workaround − approved − pending
+ *          − package purchases paid from sponsor, matching, or incoming transfers.
  *
  * User↔user fund transfers must be included so Eligible stays reduced after
  * outbound transfers (admin credits live in bonus and would otherwise return
@@ -94,6 +173,7 @@ function computeNetEligibleToWithdraw({
   pending = 0,
   fundTransferIn = 0,
   fundTransferOut = 0,
+  packageSpendFromEligible = 0,
 } = {}) {
   const net =
     Number(tradeGross || 0) +
@@ -104,7 +184,8 @@ function computeNetEligibleToWithdraw({
     Number(fundTransferOut || 0) -
     Number(matchingPaidByAdmin || 0) -
     Number(approved || 0) -
-    Number(pending || 0);
+    Number(pending || 0) -
+    Number(packageSpendFromEligible || 0);
   return Math.max(0, roundMoney(net));
 }
 
@@ -123,8 +204,12 @@ function computeAvailableIncomeStreams({
   pending = 0,
   fundTransferIn = 0,
   fundTransferOut = 0,
+  packageSpendFromSponsor = 0,
+  packageSpendFromMatching = 0,
 } = {}) {
   const matchingNet = Math.max(0, Number(matchingGross || 0) - Number(matchingPaidByAdmin || 0));
+  const sponsorAfterPackages = Math.max(0, Number(sponsorGross || 0) - Number(packageSpendFromSponsor || 0));
+  const matchingAfterPackages = Math.max(0, matchingNet - Number(packageSpendFromMatching || 0));
   const netFundOut = Math.max(0, Number(fundTransferOut || 0) - Number(fundTransferIn || 0));
   let remainingWithdrawn = Number(approved || 0) + Number(pending || 0) + netFundOut;
 
@@ -138,8 +223,8 @@ function computeAvailableIncomeStreams({
   take(tradeGross);
   take(bonus);
   return {
-    sponsorAvailable: take(sponsorGross),
-    matchingAvailable: take(matchingNet),
+    sponsorAvailable: take(sponsorAfterPackages),
+    matchingAvailable: take(matchingAfterPackages),
   };
 }
 
@@ -160,9 +245,10 @@ async function previewEligibility(userId, todayIst = null) {
   const pending = await sumWithdrawalsByStatus(userId, 'pending');
   const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
   const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
-  const [fundTransferIn, fundTransferOut] = await Promise.all([
+  const [fundTransferIn, fundTransferOut, packageSpend] = await Promise.all([
     sumFundTransfersByDirection(userId, 'credit'),
     sumFundTransfersByDirection(userId, 'debit'),
+    computePackageSpendForUser(userId),
   ]);
   const proposedEligible = computeNetEligibleToWithdraw({
     tradeGross,
@@ -174,6 +260,7 @@ async function previewEligibility(userId, todayIst = null) {
     pending,
     fundTransferIn,
     fundTransferOut,
+    packageSpendFromEligible: packageSpend.total,
   });
   const currentEligible = roundMoney(wallet.eligibleToWithdraw);
   const available = computeAvailableIncomeStreams({
@@ -186,6 +273,8 @@ async function previewEligibility(userId, todayIst = null) {
     pending,
     fundTransferIn,
     fundTransferOut,
+    packageSpendFromSponsor: packageSpend.sponsor,
+    packageSpendFromMatching: packageSpend.matching,
   });
   return {
     userCode: user?.userCode || '',
@@ -198,6 +287,7 @@ async function previewEligibility(userId, todayIst = null) {
     pending: roundMoney(pending),
     fundTransferIn: roundMoney(fundTransferIn),
     fundTransferOut: roundMoney(fundTransferOut),
+    packageSpendFromEligible: packageSpend.total,
     sponsorAvailable: available.sponsorAvailable,
     matchingAvailable: available.matchingAvailable,
     currentEligible,
@@ -313,9 +403,10 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
   const bonus = Math.max(0, Number(wallet.eligibleBonus) || 0);
   const user = await User.findById(userId).select('userCode').lean();
   const matchingPaidByAdmin = resolveMatchingPaidByAdmin(wallet, user?.userCode);
-  const [fundTransferIn, fundTransferOut] = await Promise.all([
+  const [fundTransferIn, fundTransferOut, packageSpend] = await Promise.all([
     sumFundTransfersByDirection(userId, 'credit'),
     sumFundTransfersByDirection(userId, 'debit'),
+    computePackageSpendForUser(userId),
   ]);
 
   const hasTradeBaseline = wallet.lastGrossEligibleTrade != null;
@@ -342,6 +433,7 @@ async function recalculateEligibility(userId, todayIst = null, options = {}) {
     pending,
     fundTransferIn,
     fundTransferOut,
+    packageSpendFromEligible: packageSpend.total,
   });
   await Wallet.updateOne(
     { userId },
@@ -374,6 +466,7 @@ module.exports = {
   computeTradeAutoWithdrawAmount,
   computeTotalSponsorCredited,
   computeTotalMatchingCredited,
+  computePackageSpendFromEligibleLedger,
   computeNetEligibleToWithdraw,
   computeAvailableIncomeStreams,
   sumFundTransfersByDirection,
