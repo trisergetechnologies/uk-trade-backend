@@ -1,4 +1,4 @@
-const { Wallet, WalletLedger, WithdrawalRequest } = require('../models');
+const { Wallet, WalletLedger } = require('../models');
 const { AppError } = require('../utils/errors');
 const mongoose = require('mongoose');
 
@@ -12,27 +12,79 @@ function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2));
 }
 
+function takePool(pools, key, rest) {
+  const avail = Math.max(0, Number(pools[key]) || 0);
+  const used = Math.min(avail, rest);
+  pools[key] = avail - used;
+  return rest - used;
+}
+
 /**
- * Trade income (locked or unlocked) is reserved for withdrawal only — never for packages.
- * Approved withdrawals consume trade first; whatever trade is still attributed stays reserved
- * in the wallet balance and cannot fund package purchases.
+ * Packages may be bought only with leftover deposits, admin credits, and incoming
+ * transfers. Sponsor, matching, and trade (locked or unlocked) are withdrawal-only.
+ *
+ * Replay walks the ledger in time. Packages consume deposit → admin → transfer in
+ * (then income only if a past purchase already leaked). Withdrawals and outbound
+ * transfers consume trade → admin leftover → sponsor → matching, then deposit/transfer.
  */
-function computeSpendableForPackagesFromTotals({
-  balance = 0,
-  tradeIncomeCredited = 0,
-  approvedWithdrawals = 0,
-} = {}) {
+function computeSpendableForPackagesFromLedgerEntries(entries, balance = 0) {
+  const sorted = [...(entries || [])].sort((a, b) => {
+    const dt = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    if (dt !== 0) return dt;
+    return String(a._id || '').localeCompare(String(b._id || ''));
+  });
+  const pools = {
+    deposit: 0,
+    admin: 0,
+    transferIn: 0,
+    sponsor: 0,
+    matching: 0,
+    trade: 0,
+  };
+
+  for (const entry of sorted) {
+    const amt = Number(entry.amount) || 0;
+    if (amt <= 0) continue;
+    const { direction, contextType } = entry;
+    if (direction === 'credit') {
+      if (contextType === 'fund_request_approval') pools.deposit += amt;
+      else if (contextType === 'admin_credit') pools.admin += amt;
+      else if (contextType === 'fund_transfer_in') pools.transferIn += amt;
+      else if (contextType === 'sponsor_income') pools.sponsor += amt;
+      else if (contextType === 'matching_income') pools.matching += amt;
+      else if (contextType === 'trade_income') pools.trade += amt;
+    } else if (direction === 'debit' && contextType === 'package_purchase') {
+      let rest = amt;
+      rest = takePool(pools, 'deposit', rest);
+      rest = takePool(pools, 'admin', rest);
+      rest = takePool(pools, 'transferIn', rest);
+      rest = takePool(pools, 'sponsor', rest);
+      rest = takePool(pools, 'matching', rest);
+      takePool(pools, 'trade', rest);
+    } else if (
+      direction === 'debit' &&
+      (contextType === 'withdrawal_approved' || contextType === 'fund_transfer_out')
+    ) {
+      let rest = amt;
+      rest = takePool(pools, 'trade', rest);
+      rest = takePool(pools, 'admin', rest);
+      rest = takePool(pools, 'sponsor', rest);
+      rest = takePool(pools, 'matching', rest);
+      rest = takePool(pools, 'deposit', rest);
+      takePool(pools, 'transferIn', rest);
+    }
+  }
+
   const bal = Math.max(0, Number(balance) || 0);
-  const tradeCredited = Math.max(0, Number(tradeIncomeCredited) || 0);
-  const approved = Math.max(0, Number(approvedWithdrawals) || 0);
-  const tradeLeftAfterApproved = Math.max(0, roundMoney(tradeCredited - approved));
-  const tradeReservedInWallet = Math.min(bal, tradeLeftAfterApproved);
-  const spendableForPackages = Math.max(0, roundMoney(bal - tradeReservedInWallet));
+  const spendableRaw = pools.deposit + pools.admin + pools.transferIn;
+  const spendableForPackages = Math.max(0, roundMoney(Math.min(bal, spendableRaw)));
+  const tradeReservedInWallet = Math.max(0, roundMoney(Math.min(bal, pools.trade)));
   return {
     balance: roundMoney(bal),
-    tradeIncomeCredited: roundMoney(tradeCredited),
-    approvedWithdrawals: roundMoney(approved),
-    tradeReservedInWallet: roundMoney(tradeReservedInWallet),
+    depositLeft: roundMoney(pools.deposit),
+    adminLeft: roundMoney(pools.admin),
+    transferInLeft: roundMoney(pools.transferIn),
+    tradeReservedInWallet,
     spendableForPackages,
   };
 }
@@ -46,26 +98,12 @@ async function sumTradeIncomeCredited(userId) {
   return Number(rows[0]?.t || 0);
 }
 
-async function sumApprovedWithdrawals(userId) {
-  const uid = new mongoose.Types.ObjectId(userId);
-  const rows = await WithdrawalRequest.aggregate([
-    { $match: { userId: uid, status: 'approved' } },
-    { $group: { _id: null, t: { $sum: '$amount' } } },
-  ]);
-  return Number(rows[0]?.t || 0);
-}
-
 async function getSpendableForPackages(userId) {
   const wallet = await getWalletOrThrow(userId);
-  const [tradeIncomeCredited, approvedWithdrawals] = await Promise.all([
-    sumTradeIncomeCredited(userId),
-    sumApprovedWithdrawals(userId),
-  ]);
-  return computeSpendableForPackagesFromTotals({
-    balance: wallet.balance,
-    tradeIncomeCredited,
-    approvedWithdrawals,
-  });
+  const entries = await WalletLedger.find({ userId })
+    .select('amount direction contextType createdAt')
+    .lean();
+  return computeSpendableForPackagesFromLedgerEntries(entries, wallet.balance);
 }
 
 async function assertSpendableForPackagePurchase(userId, amount) {
@@ -75,7 +113,7 @@ async function assertSpendableForPackagePurchase(userId, amount) {
   if (spendable.spendableForPackages < need) {
     throw new AppError(
       400,
-      `Insufficient spendable balance for packages. Trade income is reserved for withdrawal and cannot buy packages. Spendable: ${spendable.spendableForPackages}, required: ${need}. Add funds first.`
+      `Insufficient spendable balance for packages. Only deposits, admin credits, and incoming transfers can buy packages. Sponsor, matching, and trade income cannot. Spendable: ${spendable.spendableForPackages}, required: ${need}. Add funds first.`
     );
   }
   return spendable;
@@ -185,7 +223,7 @@ module.exports = {
   addLedgerEntry,
   computeEligibleBonusFromLedgerEntries,
   reconcileEligibleBonusFromLedger,
-  computeSpendableForPackagesFromTotals,
+  computeSpendableForPackagesFromLedgerEntries,
   sumTradeIncomeCredited,
   getSpendableForPackages,
   assertSpendableForPackagePurchase,
