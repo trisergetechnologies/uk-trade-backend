@@ -16,6 +16,13 @@ const {
 const MAX_MATCHING_LEVEL = 5;
 /** Direct referrals #1–#10 (signup order) can trigger matching for their sponsor at any tree depth. */
 const MAX_DIRECT_REFERRAL_MATCHING = 10;
+/** Spillover children do not qualify. The earner must have personally referred at least this many users. */
+const MIN_DIRECT_REFERRALS_FOR_MATCHING = 2;
+
+async function countPersonalDirectReferrals(userId) {
+  if (!userId) return 0;
+  return User.countDocuments({ referredBy: userId, role: ROLES.USER });
+}
 
 function buildIdempotencyKey(triggerPurchaseSubscriptionId, earnerUserId) {
   return `matching:${String(triggerPurchaseSubscriptionId)}:${String(earnerUserId)}`;
@@ -423,6 +430,8 @@ async function creditMatchingOnPurchase({ triggerBuyerUserId, triggerPurchaseSub
       .select('_id firstMatchingDone matchingMatchedVolume role')
       .lean();
     if (!earnerUser || !isNetworkParticipant(earnerUser)) continue;
+    const directReferralCount = await countPersonalDirectReferrals(earnerUserId);
+    if (directReferralCount < MIN_DIRECT_REFERRALS_FOR_MATCHING) continue;
 
     const snapshot = await buildMatchingSnapshot({
       earnerNode,
@@ -546,6 +555,8 @@ async function catchUpDirectReferralAnyDepthMatching({
     });
     if (!snapshot) continue;
     if (snapshot.triggerLevelFromEarner <= MAX_MATCHING_LEVEL) continue;
+    const directReferralCount = await countPersonalDirectReferrals(sponsorEarnerId);
+    if (directReferralCount < MIN_DIRECT_REFERRALS_FOR_MATCHING) continue;
 
     snapshot.catchUp = true;
     summary.considered += 1;
@@ -832,6 +843,8 @@ module.exports = {
   reprocessMatchingForSubscription,
   MAX_MATCHING_LEVEL,
   MAX_DIRECT_REFERRAL_MATCHING,
+  MIN_DIRECT_REFERRALS_FOR_MATCHING,
+  countPersonalDirectReferrals,
   isWithinFirstDirectReferrals,
   collectMatchingEarnerIds,
   catchUpDirectReferralAnyDepthMatching,
