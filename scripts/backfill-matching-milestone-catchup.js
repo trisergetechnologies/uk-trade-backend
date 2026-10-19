@@ -45,6 +45,8 @@ const {
 const {
   calculateMatchingPayout,
   MAX_MATCHING_LEVEL,
+  MIN_DIRECT_REFERRALS_FOR_MATCHING,
+  countPersonalDirectReferrals,
 } = require('../src/services/matching.service');
 const {
   collectDownlineDescendants,
@@ -132,6 +134,15 @@ async function getEarnerAnchorSubscription(earnerUserId) {
 
 async function planCatchUpForUser(user) {
   const earnerUserId = user._id;
+  const directReferralCount = await countPersonalDirectReferrals(earnerUserId);
+  if (directReferralCount < MIN_DIRECT_REFERRALS_FOR_MATCHING) {
+    return {
+      skipped: true,
+      reason: 'fewer-than-min-direct-referrals',
+      milestones: [],
+      totalPayout: 0,
+    };
+  }
   const meNode = await TreeNode.findOne({ userId: earnerUserId }).lean();
   if (!meNode) {
     return { skipped: true, reason: 'no-tree-node', milestones: [], totalPayout: 0 };

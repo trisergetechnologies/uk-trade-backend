@@ -660,4 +660,52 @@ describe('matching income (integration)', () => {
     expect(rest.credited).toBe(1);
     expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: bEarner._id, status: 'credited' })).toBe(1);
   });
+
+  test('earner with 0 direct referrals is not paid when level 1 is spillover', async () => {
+    const earner = await createUser({ name: 'Ravi', email: 'ravi-zero-direct@test.local' });
+    const sponsor = await createUser({ name: 'Sponsor', email: 'sponsor-zero-direct@test.local' });
+    const left = await createUser({ name: 'LeftSpill', email: 'left-spill@test.local', referredBy: sponsor._id });
+    const right = await createUser({ name: 'RightSpill', email: 'right-spill@test.local', referredBy: sponsor._id });
+
+    await createTreeNode({ userId: earner._id, parentUserId: null, side: 'left', level: 0 });
+    await createTreeNode({ userId: left._id, parentUserId: earner._id, side: 'left', level: 1 });
+    await createTreeNode({ userId: right._id, parentUserId: earner._id, side: 'right', level: 1 });
+
+    const t0 = new Date('2026-01-01T10:00:00.000Z');
+    await createSubscription({
+      userId: earner._id,
+      planId: plan._id,
+      principalAmount: 35000,
+      purchaseAtUtc: t0,
+    });
+    const leftSub = await createSubscription({
+      userId: left._id,
+      planId: plan._id,
+      principalAmount: 10000,
+      purchaseAtUtc: new Date(t0.getTime() + 1000),
+    });
+    const rightSub = await createSubscription({
+      userId: right._id,
+      planId: plan._id,
+      principalAmount: 10000,
+      purchaseAtUtc: new Date(t0.getTime() + 2000),
+    });
+
+    await creditMatchingOnPurchase({
+      triggerBuyerUserId: left._id,
+      triggerPurchaseSubscriptionId: leftSub._id,
+      asOfUtc: leftSub.purchaseAtUtc,
+    });
+    const result = await creditMatchingOnPurchase({
+      triggerBuyerUserId: right._id,
+      triggerPurchaseSubscriptionId: rightSub._id,
+      asOfUtc: rightSub.purchaseAtUtc,
+    });
+
+    expect(result.credited).toBe(0);
+    expect(await MatchingIncomeEvent.countDocuments({ earnerUserId: earner._id })).toBe(0);
+    expect(await WalletLedger.countDocuments({ userId: earner._id, contextType: 'matching_income' })).toBe(0);
+    const wallet = await Wallet.findOne({ userId: earner._id }).lean();
+    expect(wallet.balance).toBe(0);
+  });
 });

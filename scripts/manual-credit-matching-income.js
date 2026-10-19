@@ -19,6 +19,10 @@ require('dotenv').config();
 const { env } = require('../src/config/env');
 const { connectDb } = require('../src/db/connect');
 const { User, Wallet, PackageSubscription, MatchingIncomeEvent } = require('../src/models');
+const {
+  MIN_DIRECT_REFERRALS_FOR_MATCHING,
+  countPersonalDirectReferrals,
+} = require('../src/services/matching.service');
 const { creditWallet } = require('../src/services/wallet.service');
 const { recalculateEligibility } = require('../src/services/eligibility.service');
 const { logger } = require('../src/utils/logger');
@@ -84,6 +88,13 @@ async function run() {
     .select('_id userCode name email firstMatchingDone matchingMatchedVolume')
     .lean();
   if (!user) throw new Error(`User not found: ${USER_CODE}`);
+
+  const directReferralCount = await countPersonalDirectReferrals(user._id);
+  if (directReferralCount < MIN_DIRECT_REFERRALS_FOR_MATCHING) {
+    throw new Error(
+      `Refusing to credit ${USER_CODE}: ${directReferralCount} personal direct referrals. Matching requires at least ${MIN_DIRECT_REFERRALS_FOR_MATCHING}.`
+    );
+  }
 
   const walletBefore = await Wallet.findOne({ userId: user._id }).lean();
   if (!walletBefore) throw new Error(`Wallet not found for ${USER_CODE}`);

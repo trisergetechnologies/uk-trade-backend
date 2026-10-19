@@ -1,5 +1,5 @@
 /**
- * Zero matching income for users who were credited it with 0 personal direct referrals.
+ * Zero matching income for users who were credited it with fewer than 2 personal direct referrals.
  *
  * A personal direct referral is a user whose referredBy is this earner (role user).
  * Level-1 spillover children do not count.
@@ -11,7 +11,8 @@
  *   4. Resets firstMatchingDone and matchingMatchedVolume
  *   5. Recalculates eligibleToWithdraw (no auto-withdrawal)
  *
- * Users with 1 or more personal referrals are left unchanged.
+ * Users with 2 or more personal referrals are left unchanged.
+ * Users already cleaned (no credited matching left) are skipped.
  *
  * Dry-run (default, no writes):
  *   node scripts/zero-matching-zero-referrals.js
@@ -81,7 +82,7 @@ async function loadTargets() {
       referredBy: row._id,
       role: ROLES.USER,
     });
-    if (directReferralCount !== 0) continue;
+    if (directReferralCount >= 2) continue;
 
     const user = await User.findById(row._id).select('userCode name email firstMatchingDone matchingMatchedVolume').lean();
     if (!user) continue;
@@ -154,14 +155,15 @@ async function applyOne(target) {
           update: {
             $set: {
               status: 'skipped',
-              reason: 'reversed-no-direct-referrals',
+              reason: 'reversed-fewer-than-2-direct-referrals',
               payoutCreditedAmount: 0,
               metadata: {
                 ...(event.metadata || {}),
                 reversedAt: nowIso,
                 reversedPayoutCreditedAmount: round2(event.payoutCreditedAmount),
                 previousStatus: event.status,
-                reverseReason: 'no-direct-referrals',
+                reverseReason: 'fewer-than-2-direct-referrals',
+                directReferralCount: target.directReferralCount,
               },
             },
           },
@@ -215,6 +217,7 @@ function printRows(rows) {
       [
         String(row.userCode).padEnd(12),
         String(row.name || '').padEnd(22).slice(0, 22),
+        `ref ${row.directReferralCount}`,
         `events ₹${row.eventTotal}`,
         `ledger ₹${row.ledgerTotal}`,
         `balance ${row.balanceBefore} -> ${row.balanceAfter}`,
@@ -235,7 +238,7 @@ async function main() {
   const ledgerTotal = round2(targets.reduce((s, t) => s + t.ledgerTotal, 0));
   const negative = targets.filter((t) => t.balanceAfter < -0.001);
 
-  console.log(`\n=== ZERO MATCHING FOR 0 DIRECT REFERRALS ===`);
+  console.log(`\n=== ZERO MATCHING FOR FEWER THAN 2 DIRECT REFERRALS ===`);
   console.log(`Mode: ${DRY_RUN ? 'DRY-RUN (no writes)' : 'APPLY'}`);
   console.log(`Database: ${dbName}`);
   console.log(`Users: ${targets.length}`);
