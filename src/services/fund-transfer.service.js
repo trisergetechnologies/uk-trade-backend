@@ -16,6 +16,15 @@ async function createFundTransfer({ fromUserId, toUserCode, amount, note = '' })
     getWalletOrThrow(receiver._id),
   ]);
 
+  const { previewEligibility } = require('./eligibility.service');
+  const preview = await previewEligibility(fromUserId);
+  const manualCap = Number(preview.manualWithdrawAvailable) || 0;
+  if (manualCap < amount) {
+    throw new AppError(
+      400,
+      'Transfers can only use sponsor income, matching income, and admin bonus. Trade income is withdrawn automatically when each cycle completes.'
+    );
+  }
   if (senderWallet.eligibleToWithdraw < amount) {
     throw new AppError(400, 'Amount exceeds your eligible amount');
   }

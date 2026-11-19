@@ -135,7 +135,12 @@ describe('eligibility.engine (unit)', () => {
         pending: 0,
         fundTransferOut: 1710,
       })
-    ).toEqual({ sponsorAvailable: 0, matchingAvailable: 4920 });
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 0,
+      matchingAvailable: 4920,
+      manualWithdrawAvailable: 4920,
+    });
 
     expect(
       computeAvailableIncomeStreams({
@@ -147,14 +152,24 @@ describe('eligibility.engine (unit)', () => {
         approved: 15690,
         pending: 0,
       })
-    ).toEqual({ sponsorAvailable: 1710, matchingAvailable: 4920 });
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 1710,
+      matchingAvailable: 4920,
+      manualWithdrawAvailable: 6630,
+    });
 
     expect(
       computeAvailableIncomeStreams({
         sponsorGross: 1000,
         matchingGross: 500,
       })
-    ).toEqual({ sponsorAvailable: 1000, matchingAvailable: 500 });
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 1000,
+      matchingAvailable: 500,
+      manualWithdrawAvailable: 1500,
+    });
 
     expect(
       computeAvailableIncomeStreams({
@@ -162,7 +177,45 @@ describe('eligibility.engine (unit)', () => {
         matchingGross: 500,
         approved: 1500,
       })
-    ).toEqual({ sponsorAvailable: 0, matchingAvailable: 0 });
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 0,
+      matchingAvailable: 0,
+      manualWithdrawAvailable: 0,
+    });
+
+    // Unlocked trade must never be available for manual withdraw / transfer.
+    expect(
+      computeAvailableIncomeStreams({
+        tradeGross: 5610,
+        sponsorGross: 0,
+        matchingGross: 0,
+        bonus: 0,
+        approved: 0,
+        pending: 0,
+      })
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 0,
+      matchingAvailable: 0,
+      manualWithdrawAvailable: 0,
+    });
+
+    expect(
+      computeAvailableIncomeStreams({
+        tradeGross: 5610,
+        sponsorGross: 2000,
+        matchingGross: 1000,
+        bonus: 500,
+        approved: 0,
+        pending: 5610,
+      })
+    ).toEqual({
+      bonusAvailable: 500,
+      sponsorAvailable: 2000,
+      matchingAvailable: 1000,
+      manualWithdrawAvailable: 3500,
+    });
 
     expect(
       computeNetEligibleToWithdraw({
@@ -242,7 +295,12 @@ describe('eligibility.engine (unit)', () => {
         sponsorGross: 5000,
         packageSpendFromSponsor: transferPartial.sponsor,
       })
-    ).toEqual({ sponsorAvailable: 5000, matchingAvailable: 0 });
+    ).toEqual({
+      bonusAvailable: 0,
+      sponsorAvailable: 5000,
+      matchingAvailable: 0,
+      manualWithdrawAvailable: 5000,
+    });
 
     const withdrawnThenDepositPackage = computePackageSpendFromEligibleLedger([
       row('2026-01-01', 'credit', 'fund_transfer_in', 10000),

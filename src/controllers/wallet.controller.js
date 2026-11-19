@@ -19,6 +19,9 @@ async function myWallet(req, res, next) {
     const data = wallet.toObject ? wallet.toObject() : { ...wallet };
     data.sponsorAvailable = preview.sponsorAvailable;
     data.matchingAvailable = preview.matchingAvailable;
+    data.bonusAvailable = preview.bonusAvailable;
+    /** Manual request cap: sponsor + matching + admin bonus only (trade is auto on cycle unlock). */
+    data.manualWithdrawAvailable = preview.manualWithdrawAvailable;
     data.spendableForPackages = spendable.spendableForPackages;
     data.tradeReservedInWallet = spendable.tradeReservedInWallet;
     data.tradeCurrentCycle = Math.max(0, totalTradeCredited - (preview.tradeGross || 0));

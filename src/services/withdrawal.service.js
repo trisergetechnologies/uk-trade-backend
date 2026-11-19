@@ -1,12 +1,14 @@
 const { WithdrawalRequest, AuditLog, User } = require('../models');
 const { getWalletOrThrow, debitWallet } = require('./wallet.service');
-const { recalculateEligibility } = require('./eligibility.service');
+const { recalculateEligibility, previewEligibility } = require('./eligibility.service');
 const { isBankAccountComplete } = require('./kyc.service');
 const { computeWithdrawalDeductions } = require('../utils/withdrawal-deductions');
 const { AppError } = require('../utils/errors');
 
 const OBJECT_ID_HEX = /^[a-fA-F0-9]{24}$/;
 const MIN_WITHDRAWAL_AMOUNT = 500;
+const MANUAL_TRADE_BLOCK_MESSAGE =
+  'Manual withdrawals can only use sponsor income, matching income, and admin bonus. Trade income is withdrawn automatically when each cycle completes.';
 
 function buildBankSnapshot(bank) {
   const accountDigits = String(bank.accountNumber || '').replace(/\D/g, '');
@@ -84,6 +86,11 @@ async function findWithdrawalForAdminReview(requestId) {
 async function createWithdrawalRequest(userId, amount) {
   await recalculateEligibility(userId, null, { skipAutoWithdraw: true });
   const wallet = await getWalletOrThrow(userId);
+  const preview = await previewEligibility(userId);
+  const manualCap = Number(preview.manualWithdrawAvailable) || 0;
+  if (manualCap < amount) {
+    throw new AppError(400, MANUAL_TRADE_BLOCK_MESSAGE);
+  }
   if (wallet.eligibleToWithdraw < amount) {
     throw new AppError(400, 'Amount exceeds eligible to withdraw');
   }
@@ -150,6 +157,7 @@ async function reviewWithdrawalRequest(adminUserId, requestId, status, reason) {
 
 module.exports = {
   MIN_WITHDRAWAL_AMOUNT,
+  MANUAL_TRADE_BLOCK_MESSAGE,
   tryAutoWithdrawNewTradeIncome,
   createWithdrawalRequest,
   reviewWithdrawalRequest,

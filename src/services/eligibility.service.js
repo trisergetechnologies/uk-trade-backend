@@ -190,9 +190,12 @@ function computeNetEligibleToWithdraw({
 }
 
 /**
- * Remaining sponsor/matching still sitting in Eligible after withdrawals.
+ * Remaining non-trade streams still sitting in Eligible after withdrawals.
  * Withdrawals consume unlocked trade first (auto-withdraw), then leftover admin bonus,
  * then sponsor, then matching — so leftover matching is not shown as still-available sponsor.
+ *
+ * manualWithdrawAvailable = bonus + sponsor + matching left (never trade).
+ * Trade is auto-withdrawn on cycle unlock only; users must not request it manually.
  */
 function computeAvailableIncomeStreams({
   tradeGross = 0,
@@ -221,10 +224,14 @@ function computeAvailableIncomeStreams({
   };
 
   take(tradeGross);
-  take(bonus);
+  const bonusAvailable = take(bonus);
+  const sponsorAvailable = take(sponsorAfterPackages);
+  const matchingAvailable = take(matchingAfterPackages);
   return {
-    sponsorAvailable: take(sponsorAfterPackages),
-    matchingAvailable: take(matchingAfterPackages),
+    bonusAvailable,
+    sponsorAvailable,
+    matchingAvailable,
+    manualWithdrawAvailable: roundMoney(bonusAvailable + sponsorAvailable + matchingAvailable),
   };
 }
 
@@ -288,8 +295,11 @@ async function previewEligibility(userId, todayIst = null) {
     fundTransferIn: roundMoney(fundTransferIn),
     fundTransferOut: roundMoney(fundTransferOut),
     packageSpendFromEligible: packageSpend.total,
+    bonusAvailable: available.bonusAvailable,
     sponsorAvailable: available.sponsorAvailable,
     matchingAvailable: available.matchingAvailable,
+    /** Sponsor + matching + admin bonus only — trade is auto-withdraw on cycle unlock. */
+    manualWithdrawAvailable: available.manualWithdrawAvailable,
     currentEligible,
     proposedEligible,
     currentBalance: roundMoney(wallet.balance),
