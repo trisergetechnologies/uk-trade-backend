@@ -6,6 +6,7 @@ const {
   requestWithdrawal,
   myWithdrawalSummary,
   listMyWithdrawals,
+  adminWithdrawalSummary,
   adminListWithdrawals,
   adminReviewWithdrawal,
 } = require('../controllers/withdrawal.controller');
@@ -16,6 +17,7 @@ const router = express.Router();
 router.post('/', authRequired, validate(withdrawalRequestSchema), requestWithdrawal);
 router.get('/me/summary', authRequired, myWithdrawalSummary);
 router.get('/me', authRequired, listMyWithdrawals);
+router.get('/admin/summary', authRequired, allowRoles(ROLES.ADMIN), adminWithdrawalSummary);
 router.get('/admin', authRequired, allowRoles(ROLES.ADMIN), adminListWithdrawals);
 router.patch('/admin/:id/review', authRequired, allowRoles(ROLES.ADMIN), validate(adminReviewWithdrawalSchema), adminReviewWithdrawal);
 

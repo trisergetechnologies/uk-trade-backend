@@ -58,6 +58,46 @@ async function listMyWithdrawals(req, res, next) {
   }
 }
 
+async function adminWithdrawalSummary(req, res, next) {
+  try {
+    const rows = await WithdrawalRequest.aggregate([
+      { $match: { status: { $in: ['pending', 'approved'] } } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          gross: { $sum: '$amount' },
+          netPayable: { $sum: '$netPayable' },
+          tds: { $sum: '$tdsAmount' },
+          handling: { $sum: '$handlingAmount' },
+        },
+      },
+    ]);
+    const empty = { count: 0, gross: 0, netPayable: 0, tds: 0, handling: 0 };
+    const byStatus = { pending: { ...empty }, approved: { ...empty } };
+    for (const row of rows) {
+      if (row._id === 'pending' || row._id === 'approved') {
+        byStatus[row._id] = {
+          count: Number(row.count) || 0,
+          gross: Number(row.gross) || 0,
+          netPayable: Number(row.netPayable) || 0,
+          tds: Number(row.tds) || 0,
+          handling: Number(row.handling) || 0,
+        };
+      }
+    }
+    res.json({
+      success: true,
+      data: {
+        pending: byStatus.pending,
+        approved: byStatus.approved,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function adminListWithdrawals(req, res, next) {
   try {
     const { page, limit, skip } = parsePagination(req);
@@ -106,6 +146,7 @@ module.exports = {
   requestWithdrawal,
   myWithdrawalSummary,
   listMyWithdrawals,
+  adminWithdrawalSummary,
   adminListWithdrawals,
   adminReviewWithdrawal,
 };

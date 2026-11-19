@@ -42,6 +42,7 @@ async function getAdminOverview(days = 14) {
     totalPlans,
     totalPackages,
     incomeTotals,
+    withdrawalAmountTotals,
     flowRows,
   ] = await Promise.all([
     User.countDocuments({}),
@@ -57,6 +58,17 @@ async function getAdminOverview(days = 14) {
         { $match: { status: 'credited' } },
         { $group: { _id: null, total: { $sum: '$payoutCreditedAmount' } } },
       ]),
+    ]),
+    WithdrawalRequest.aggregate([
+      { $match: { status: { $in: ['pending', 'approved'] } } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          gross: { $sum: '$amount' },
+          netPayable: { $sum: '$netPayable' },
+        },
+      },
     ]),
     Promise.all([
       PaymentRequest.aggregate([
@@ -80,6 +92,16 @@ async function getAdminOverview(days = 14) {
   const tradeIncomeTotal = Number(incomeTotals[0]?.[0]?.total || 0);
   const sponsorIncomeTotal = Number(incomeTotals[1]?.[0]?.total || 0);
   const matchingIncomeTotal = Number(incomeTotals[2]?.[0]?.total || 0);
+  const withdrawalByStatus = { pending: { count: 0, gross: 0, netPayable: 0 }, approved: { count: 0, gross: 0, netPayable: 0 } };
+  for (const row of withdrawalAmountTotals) {
+    if (row._id === 'pending' || row._id === 'approved') {
+      withdrawalByStatus[row._id] = {
+        count: Number(row.count) || 0,
+        gross: Number(row.gross) || 0,
+        netPayable: Number(row.netPayable) || 0,
+      };
+    }
+  }
   const series = [];
   for (let i = 0; i < days; i += 1) {
     const d = new Date(fromStart.getTime() + i * 24 * 60 * 60 * 1000);
@@ -105,6 +127,12 @@ async function getAdminOverview(days = 14) {
       sponsorIncomeTotal,
       matchingIncomeTotal,
       totalIncome: tradeIncomeTotal + sponsorIncomeTotal + matchingIncomeTotal,
+      approvedWithdrawalsGross: withdrawalByStatus.approved.gross,
+      approvedWithdrawalsNet: withdrawalByStatus.approved.netPayable,
+      approvedWithdrawalsCount: withdrawalByStatus.approved.count,
+      pendingWithdrawalsGross: withdrawalByStatus.pending.gross,
+      pendingWithdrawalsNet: withdrawalByStatus.pending.netPayable,
+      pendingWithdrawalsCount: withdrawalByStatus.pending.count,
     },
     series,
   };
